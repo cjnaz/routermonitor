@@ -1,0 +1,260 @@
+#!/usr/bin/env python
+"""Monitor for new devices/clients on the network.
+
+The dd-wrt-based network router is queried for known DHCP clients using 
+    $ ssh root@<ROUTER_IP> cat /tmp/dnsmasq.leases
+and any new clients are identified and a notification is sent.  
+Setup requirements:
+    ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
+"""
+
+__version__ = "v0.1 200426"
+
+
+#==========================================================
+#
+#  Chris Nelson, January 2019-2020
+#
+# 200426 v0.1  New
+#
+# Changes pending
+#   Notify on new clients - lookup oidsearch and include in notification.
+#   CRON run hourly
+#   
+#==========================================================
+
+import argparse
+import subprocess
+import sys
+import re
+import time
+import collections
+import mysql.connector
+from funcs3 import *
+
+# Configs / Constants
+# See config.cfg for DB params
+
+
+setuplogging(logfile= 'log.txt')
+loadconfig (cfgfile='config.cfg')
+
+
+def main():
+
+    # Check for database access and populate if non-existing
+    db_connection = mysql.connector.connect(host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
+    db_cursor = db_connection.cursor()
+    db_cursor.execute("SHOW DATABASES")
+    found = False
+    for db in db_cursor:
+        if getcfg("DB_DB") in db[0]:
+            found = True
+            break
+    if not found:
+        print(f"ERROR:  Manually create the <{getcfg('DB_DB')}> database.")
+        sys.exit(1)
+
+    db_connection = mysql.connector.connect(database=getcfg("DB_DB"), host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
+    db_cursor = db_connection.cursor(buffered=True, dictionary=True)
+    db_cursor.execute("SHOW TABLES")
+    found = False
+    for row in db_cursor:
+        if getcfg('DB_TABLE') in row['Tables_in_' + getcfg('DB_DB')]:
+            found = True
+            break
+
+    if found and args.create_db:
+        db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
+        db_connection.commit()
+
+    def db_add_client(MAC, record):
+        cmd = "INSERT INTO {} (MAC, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\')".format(
+            getcfg('DB_TABLE'),
+            MAC,
+            record['hostname'],
+            "-",
+            time.asctime(time.localtime()),
+            record['IP'],
+            record['expiry'])
+        db_cursor.execute(cmd)
+
+    if not found or args.create_db:
+        router_clients = get_router_clients()
+        db_fields = "MAC VARCHAR(17), hostname VARCHAR(30), notes VARCHAR(50), first_seen VARCHAR(24), expiry VARCHAR(24), IP VARCHAR(15)"
+        db_cursor.execute(f"CREATE TABLE {getcfg('DB_TABLE')} ({db_fields})")
+
+        for MAC in router_clients:
+            db_add_client (MAC, router_clients[MAC])
+        db_connection.commit()
+
+
+    # List known clients from database
+    if args.list_db:
+        get_database_clients(dump=True)
+        sys.exit()
+
+
+    # Add a note for a client to the database
+    if args.add_note is not None:
+        if args.MAC is None:
+            print ("ERROR - Must specify the --MAC when using --add-note")
+            sys.exit(1)
+        db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
+        if db_cursor.rowcount > 0:
+        # if db_cursor.with_rows:
+            new_note = args.add_note.replace("'", "")   # single quotes not handled in notes.  Throw them out.
+            db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET notes = '{new_note}' WHERE MAC = '{args.MAC}'")
+            db_connection.commit()
+        else:
+            print (f"MAC address <{args.MAC}> not found in the database.")
+            sys.exit(1)
+        sys.exit()
+
+
+    # Delete a client from the database
+    if args.delete:
+        if args.MAC is None:
+            print ("ERROR - Must specify the --MAC when using --delete")
+            sys.exit(1)
+        db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
+        if db_cursor.rowcount > 0:
+            db_cursor.execute(f"DELETE FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
+            db_connection.commit()
+        else:
+            print (f"MAC address <{args.MAC}> not found in the database.")
+            sys.exit(1)
+        sys.exit()
+
+
+    # Update database from router
+    if args.update:
+        router_clients = get_router_clients()
+        database_clients = get_database_clients()
+        for MAC in router_clients:
+            if MAC not in database_clients:
+                msg = f"...{MAC}\n...{router_clients[MAC]['hostname']}\n...{router_clients[MAC]['IP']}"
+                snd_notif (subj="New client found on LAN", msg=msg, log=True)
+                db_add_client (MAC, router_clients[MAC])
+                break
+            if router_clients[MAC]['IP'] != database_clients[MAC]['IP']:
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:     {router_clients[MAC]['IP']}")
+                logging.info(msg)
+                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{router_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
+            if router_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry: {router_clients[MAC]['expiry']}")
+                logging.info(msg)
+                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{router_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
+
+        db_connection.commit()
+        sys.exit()
+
+
+    # List known clients from router
+    if args.list_router:
+        get_router_clients(dump=True)
+        sys.exit()
+
+
+def get_database_clients(dump=False):
+    """ Get clients currently in the database, return a sorted dictionary of dictionaries, keyed by MAC
+        {
+            MAC:  { hostname:, IP:, expiry:, first_seen:, notes: }
+        }
+    """
+    db_connection = mysql.connector.connect(database=getcfg("DB_DB"), host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
+    db_cursor = db_connection.cursor(buffered=True, dictionary=True)
+    db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')}")
+    clients_list = {}
+    for row in db_cursor:
+        clients_list[row['MAC']] = {
+            "hostname":   row['hostname'],
+            "IP":         row['IP'],
+            "expiry":     row['expiry'],
+            "first_seen": row['first_seen'],
+            "notes":      row['notes'] }
+    clients_list = collections.OrderedDict(sorted(clients_list.items()))
+
+    if dump:
+        print(f"{'MAC':<17}  {'Hostname':<30}  {'First seen':<25}  {'IP Expiry':<25}  {'Current IP':<13}  {'Notes'}")
+        for MAC in clients_list:
+            print("{:<17}  {:<30}  {:<25}  {:<25}  {:<13}  {}".format(
+                MAC,
+                clients_list[MAC]['hostname'],
+                clients_list[MAC]['first_seen'],
+                clients_list[MAC]['expiry'],
+                clients_list[MAC]['IP'],
+                clients_list[MAC]['notes']))
+        print (f"  <{db_cursor.rowcount}>  known clients.")
+
+    return clients_list
+
+
+def get_router_clients(dump=False):
+    """ Get leases from the router, return a sorted dictionary of dictionaries, keyed by MAC
+        {
+            MAC:  { hostname:, IP:, expiry: }
+        }
+    """
+    clients_list = {}
+    try:
+        clients = subprocess.run(["ssh", "root@" + getcfg("ROUTER_IP"), "cat", getcfg("ROUTER_DHCP")], capture_output=True, text=True).stdout.split("\n")
+    except Exception as e:
+        print("Exception <{}>".format(e))
+    # 1587457675 00:0d:c5:5c:82:6d 192.168.1.105 Hopper-ETH0 01:00:0d:c5:5c:82:6d
+    line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)") # [\dabcdef:]+")
+    for line in clients:
+        xx = line_re.match(line)
+        if xx:
+            if xx.group(1) == '0':
+                expiry = "static lease"
+            else:
+                expiry = time.asctime(time.localtime(int(xx.group(1))))
+            clients_list[xx.group(2)] = {"hostname":xx.group(4), "IP":xx.group(3), "expiry":expiry}
+        else:
+            if len(line) > 0:
+                print ("ERROR in get_router_clients:  This line looks bogus:\n  ", line)
+    clients_list = collections.OrderedDict(sorted(clients_list.items()))
+
+    if dump:
+        count = 0
+        for client in clients_list:
+            count += 1
+            print("{:<25} {} {:<13}  {}".format(
+                clients_list[client]["expiry"],
+                client, 
+                clients_list[client]["IP"],
+                clients_list[client]["hostname"]))
+        print (f"  <{count}>  known clients.")
+
+    return clients_list
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('-u', '--update', action="store_true",
+                        help="Check the router for new connections and update database.")
+    parser.add_argument('-l', '--list-db', action='store_true',
+                        help="Print known clients on the network from the database.")
+    parser.add_argument('--list-router', action='store_true',
+                        help="Print known clients on the network from the router.")
+    parser.add_argument('--create-db', action='store_true',
+                        help="Create a fresh database and populate it with the current clients.")
+    parser.add_argument('-a', '--add-note', type=str,
+                        help="Add a note to the db for the specified --MAC.")
+    parser.add_argument('--delete', action='store_true',
+                        help="Delete from the db the specified --MAC.")
+    parser.add_argument('-M', '--MAC', type=str,
+                        help="MAC address in the database to be modified or deleted.")
+    parser.add_argument('-V', '--version', action='version', version='%(prog)s ' + __version__,
+                        help="Return version number and exit.")
+
+    if len(sys.argv)==1:      # Useful for empty command line help
+        parser.print_help()
+        sys.exit()
+
+    args = parser.parse_args()
+
+    main()
+    sys.exit()
