@@ -18,12 +18,13 @@ Globals:
         from a different pwd, such as when running from cron.
 """
 
-__func3_version__ = "v0.3 200426"
+__func3_version__ = "v0.4 200522"
 
 #==========================================================
 #
 #  Chris Nelson, January 2019-2020
 #
+# 200522 v0.4  Reworked loadconfig & JAM with re to support ':' and '=' delimiters.
 # 200426 v0.3  Updated for Python 3. Python 2 unsupported.  Using tempfile module.
 # 190319 v0.2  Added email port selection and SSL/TLS support
 # 180520 v0.1  New
@@ -40,6 +41,7 @@ import smtplib
 from email.mime.text import MIMEText
 import logging
 import tempfile
+import re
 import __main__
 
 
@@ -64,7 +66,7 @@ def setuplogging (logfile= 'log.txt'):
     logging.basicConfig(filename=logpath,
         format='%(asctime)s/%(module)s/%(funcName)s/%(levelname)s:  %(message)s')
 
-
+cfgline = re.compile(r"([\w]+)[\s=:]+(.*)")
 def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
     """Read config file into dictionary cfg.
 
@@ -87,7 +89,7 @@ def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
     else:                       config = progdir + '/' + cfgfile
 
     if not os.path.exists(config):
-        logging.error("loadConfg:  Config file <{}> does not exist.  Aborting.".format(config))
+        logging.error("loadConfig:  Config file <{}> does not exist.  Aborting.".format(config))
         sys.exit(1)
     
     logging.info ('Loading {}'.format(config))
@@ -95,20 +97,20 @@ def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
         for line in ifile:
             line = line[0:line.find('#')].lstrip().rstrip() # throw away comment and any leading & trailing whitespace
             if len(line) > 0:
-                xx = line.strip().split(None, 1)        # parse to 2-element list
-                if len(xx) == 2:
+                out = cfgline.match(line)
+                if out:
                     try:
-                        cfg[xx[0]] = int(xx[1])         # append int to dict
+                        cfg[out.group(1)] = int(out.group(2))   # append int to dict
                     except:
-                        cfg[xx[0]] = xx[1]              # append string to dict
-                    logging.debug ("Loaded {} = {}".format(xx[0], xx[1]))
-                else: logging.warning ("loadConfig error on line {}.  Line skipped.".format(xx))
+                        cfg[out.group(1)] = out.group(2)        # append string to dict
+                    logging.debug ("Loaded {} = {}".format(out.group(1), cfg[out.group(1)]))
+                else: logging.warning ("loadConfig error on line {}.  Line skipped.".format(line))
 
     if 'LoggingLevel' in cfg:                           # LoggingLevel from config file sets the following log level
         ll = cfg['LoggingLevel']
         logging.info ('Logging level set to <{}>'.format(ll))
         logging.getLogger().setLevel(ll)
-    else:  logging.getLogger().setLevel(30)             # INFO level is default
+    # else:  logging.getLogger().setLevel(30)             # INFO level is default
 
 
 def JAM():
@@ -125,14 +127,14 @@ def JAM():
             for line in ifile:
                 line = line[0:line.find('#')].lstrip().rstrip() # throw away comment and any leading & trailing whitespace
                 if len(line) > 0:
-                    xx = line.strip().split(None, 1)    # parse to 2-element list
-                    if len(xx) == 2:
+                    out = cfgline.match(line)
+                    if out:
                         try:
-                            cfg[xx[0]] = int(xx[1])     # append int to dict
+                            cfg[out.group(1)] = int(out.group(2))   # append int to dict
                         except:
-                            cfg[xx[0]] = xx[1]          # append string to dict
-                        logging.warning ("JAMed {} = {}".format(xx[0], xx[1]))
-                    else: logging.warning ("JAM error on line {}.  Line skipped.".format(xx))
+                            cfg[out.group(1)] = out.group(2)        # append string to dict
+                        logging.warning ("JAMed {} = {}".format(out.group(1), cfg[out.group(1)]))
+                    else: logging.warning ("JAM error on line {}.  Line skipped.".format(line))
         if os.path.exists(progdir + '/JAMed'): os.remove(progdir + '/JAMed')
         os.rename (progdir + '/JAM', progdir + '/JAMed')
 
@@ -140,7 +142,7 @@ def JAM():
         ll = cfg['LoggingLevel']
         logging.info ('Logging level set to <{}>'.format(ll))
         logging.getLogger().setLevel(ll)
-    else:  logging.getLogger().setLevel(30)             # INFO level is default
+    # else:  logging.getLogger().setLevel(30)             # INFO level is default
 
 
 def getcfg(param, default=None):
@@ -315,23 +317,23 @@ if __name__ == '__main__':
     setuplogging(logfile= 'testlogfile.txt')
     loadconfig (cfgfile='testcfg.cfg', cfgloglevel=10)
 
-    # # Tests for loadConfig, getcfg
-    # for key in cfg:
-    #     print ("{:>15} = {}".format(key, cfg[key]))
+    # Tests for loadConfig, getcfg
+    for key in cfg:
+        print ("{:>15} = {}".format(key, cfg[key]))
 
-    # print ("Testing getcfg - Not in cfg with default: <{}>".format(getcfg('NotInCfg', '--default--')))
-    # print ("Testing getcfg - Not in cfg with no default... will cause an exit()")
+    print ("Testing getcfg - Not in cfg with default: <{}>".format(getcfg('NotInCfg', '--default--')))
+    print ("Testing getcfg - Not in cfg with no default... will cause an exit()")
     # getcfg('NotInCfg-NoDef')
 
 
-    # # Tests for JAM
-    # with io.open("JAM", 'w') as ofile:
-    #     ofile.write("JammedInt 1234\n")
-    #     ofile.write("JammedStr This is a text string # with a comment on the end\n")
-    #     ofile.write("LoggingLevel 10\n")
-    # JAM()
-    # print ("JammedInt = <{}>, {}".format(getcfg('JammedInt'), type(getcfg('JammedInt'))))
-    # print ("JammedStr = <{}>, {}".format(getcfg('JammedStr'), type(getcfg('JammedStr'))))
+    # Tests for JAM
+    with io.open("JAM", 'w') as ofile:
+        ofile.write("JammedInt 1234\n")
+        ofile.write("JammedStr This is a text string # with a comment on the end\n")
+        ofile.write("LoggingLevel 10\n")
+    JAM()
+    print ("JammedInt = <{}>, {}".format(getcfg('JammedInt'), type(getcfg('JammedInt'))))
+    print ("JammedStr = <{}>, {}".format(getcfg('JammedStr'), type(getcfg('JammedStr'))))
 
 
     # # Tests for sndNotif and snd_email

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Monitor for new devices/clients on the network.
 
 The dd-wrt-based network router is queried for known DHCP clients using 
@@ -8,18 +8,17 @@ Setup requirements:
     ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
 """
 
-__version__ = "v0.1 200426"
+__version__ = "v0.2 200523"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2019-2020
 #
+# 200523 v0.2  Track host name changes, support single quotes in notes, support older subprocess.run() output capture.
 # 200426 v0.1  New
 #
 # Changes pending
-#   Notify on new clients - lookup oidsearch and include in notification.
-#   CRON run hourly
 #   
 #==========================================================
 
@@ -30,14 +29,17 @@ import re
 import time
 import collections
 import mysql.connector
-from funcs3 import *
+import requests
+import logging
+from funcs3 import setuplogging, loadconfig, getcfg, snd_notif
 
 # Configs / Constants
 # See config.cfg for DB params
 
+py_version = float(sys.version_info.major) + float(sys.version_info.minor)/10
 
 setuplogging(logfile= 'log.txt')
-loadconfig (cfgfile='config.cfg')
+loadconfig  (cfgfile='config.cfg')
 
 
 def main():
@@ -69,9 +71,10 @@ def main():
         db_connection.commit()
 
     def db_add_client(MAC, record):
-        cmd = "INSERT INTO {} (MAC, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\')".format(
+        cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\')".format(
             getcfg('DB_TABLE'),
             MAC,
+            lookup_MAC(MAC),
             record['hostname'],
             "-",
             time.asctime(time.localtime()),
@@ -81,7 +84,7 @@ def main():
 
     if not found or args.create_db:
         router_clients = get_router_clients()
-        db_fields = "MAC VARCHAR(17), hostname VARCHAR(30), notes VARCHAR(50), first_seen VARCHAR(24), expiry VARCHAR(24), IP VARCHAR(15)"
+        db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(50), first_seen VARCHAR(24), expiry VARCHAR(24), IP VARCHAR(15), MACOUI VARCHAR(30)"
         db_cursor.execute(f"CREATE TABLE {getcfg('DB_TABLE')} ({db_fields})")
 
         for MAC in router_clients:
@@ -102,8 +105,7 @@ def main():
             sys.exit(1)
         db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
         if db_cursor.rowcount > 0:
-        # if db_cursor.with_rows:
-            new_note = args.add_note.replace("'", "")   # single quotes not handled in notes.  Throw them out.
+            new_note = args.add_note.replace("'", "''")   # single quotes need to be doubled up in SQL
             db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET notes = '{new_note}' WHERE MAC = '{args.MAC}'")
             db_connection.commit()
         else:
@@ -133,16 +135,20 @@ def main():
         database_clients = get_database_clients()
         for MAC in router_clients:
             if MAC not in database_clients:
-                msg = f"...{MAC}\n...{router_clients[MAC]['hostname']}\n...{router_clients[MAC]['IP']}"
-                snd_notif (subj="New client found on LAN", msg=msg, log=True)
+                msg = f"\n{router_clients[MAC]['hostname']}\n{router_clients[MAC]['IP']}\n{MAC}\n{lookup_MAC(MAC)}"
+                snd_notif (subj="New LAN client found", msg=msg, log=True)
                 db_add_client (MAC, router_clients[MAC])
                 break
+            if router_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {router_clients[MAC]['hostname']}")
+                logging.info(msg)
+                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET hostname = \'{router_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
             if router_clients[MAC]['IP'] != database_clients[MAC]['IP']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:     {router_clients[MAC]['IP']}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:       {router_clients[MAC]['IP']}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{router_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
             if router_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry: {router_clients[MAC]['expiry']}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {router_clients[MAC]['expiry']}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{router_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
@@ -172,18 +178,20 @@ def get_database_clients(dump=False):
             "IP":         row['IP'],
             "expiry":     row['expiry'],
             "first_seen": row['first_seen'],
-            "notes":      row['notes'] }
+            "notes":      row['notes'],
+            "MACOUI":     row['MACOUI'] }
     clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
-        print(f"{'MAC':<17}  {'Hostname':<30}  {'First seen':<25}  {'IP Expiry':<25}  {'Current IP':<13}  {'Notes'}")
+        print(f"{'Hostname':<25}  {'First seen':<24}  {'Current IP':<13}  {'IP Expiry':<24}  {'MAC':<17}  {'MAC Org Unique ID':<30}  {'Notes'}")
         for MAC in clients_list:
-            print("{:<17}  {:<30}  {:<25}  {:<25}  {:<13}  {}".format(
-                MAC,
+            print("{:<25}  {:<24}  {:<13}  {:<24}  {:<17}  {:<30}  {}".format(
                 clients_list[MAC]['hostname'],
                 clients_list[MAC]['first_seen'],
-                clients_list[MAC]['expiry'],
                 clients_list[MAC]['IP'],
+                clients_list[MAC]['expiry'],
+                MAC,
+                clients_list[MAC]['MACOUI'],
                 clients_list[MAC]['notes']))
         print (f"  <{db_cursor.rowcount}>  known clients.")
 
@@ -198,11 +206,15 @@ def get_router_clients(dump=False):
     """
     clients_list = {}
     try:
-        clients = subprocess.run(["ssh", "root@" + getcfg("ROUTER_IP"), "cat", getcfg("ROUTER_DHCP")], capture_output=True, text=True).stdout.split("\n")
+        _cmd = ["ssh", "root@" + getcfg("ROUTER_IP"), "cat", getcfg("ROUTER_DHCP")]
+        if py_version >= 3.7:
+            clients = subprocess.run(_cmd, capture_output=True, text=True).stdout.split("\n")
+        else:   #Py 3.6 .run does not support capture_output, so use the old method.
+            clients = subprocess.run(_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True).stdout.split("\n")
     except Exception as e:
         print("Exception <{}>".format(e))
     # 1587457675 00:0d:c5:5c:82:6d 192.168.1.105 Hopper-ETH0 01:00:0d:c5:5c:82:6d
-    line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)") # [\dabcdef:]+")
+    line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)")
     for line in clients:
         xx = line_re.match(line)
         if xx:
@@ -228,6 +240,25 @@ def get_router_clients(dump=False):
         print (f"  <{count}>  known clients.")
 
     return clients_list
+
+
+def lookup_MAC(MAC):
+    r = requests.get("https://oidsearch.s.dd-wrt.com/search/" + MAC[0:8])
+    if r.status_code == 200:
+        _next = False
+        for line in r.text.split("\n"):
+            if _next:
+                break
+            if "<h2>" in line:
+                _next = True
+        if _next:
+            search_result = line[0:line.find("<br>")]
+            if search_result == "":
+                search_result = "--none--"
+    else:
+        search_result = "OID search failed"
+
+    return (search_result)
 
 
 
