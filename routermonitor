@@ -8,14 +8,15 @@ Setup requirements:
     ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
 """
 
-__version__ = "v0.2 200523"
+__version__ = "v0.2.1 200526"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2019-2020
 #
-# 200523 v0.2  Track host name changes, support single quotes in notes, support older subprocess.run() output capture.
+# 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
+# 200522 v0.2  Track host name changes, support single quotes in notes, support older subprocess.checkoutput()
 # 200426 v0.1  New
 #
 # Changes pending
@@ -138,7 +139,7 @@ def main():
                 msg = f"\n{router_clients[MAC]['hostname']}\n{router_clients[MAC]['IP']}\n{MAC}\n{lookup_MAC(MAC)}"
                 snd_notif (subj="New LAN client found", msg=msg, log=True)
                 db_add_client (MAC, router_clients[MAC])
-                break
+                continue
             if router_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
                 msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {router_clients[MAC]['hostname']}")
                 logging.info(msg)
@@ -214,7 +215,7 @@ def get_router_clients(dump=False):
     except Exception as e:
         print("Exception <{}>".format(e))
     # 1587457675 00:0d:c5:5c:82:6d 192.168.1.105 Hopper-ETH0 01:00:0d:c5:5c:82:6d
-    line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)")
+    line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)") # [\dabcdef:]+")
     for line in clients:
         xx = line_re.match(line)
         if xx:
