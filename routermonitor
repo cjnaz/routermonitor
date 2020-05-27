@@ -8,13 +8,14 @@ Setup requirements:
     ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
 """
 
-__version__ = "v0.2.1 200526"
+__version__ = "v0.2.2 200527"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2019-2020
 #
+# 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 # 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
 # 200522 v0.2  Track host name changes, support single quotes in notes, support older subprocess.checkoutput()
 # 200426 v0.1  New
@@ -66,6 +67,11 @@ def main():
         if getcfg('DB_TABLE') in row['Tables_in_' + getcfg('DB_DB')]:
             found = True
             break
+
+
+    print(lookup_MAC(args.MAC))
+    exit()
+
 
     if found and args.create_db:
         db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
@@ -248,12 +254,16 @@ def lookup_MAC(MAC):
     if r.status_code == 200:
         _next = False
         for line in r.text.split("\n"):
+            print (line)
             if _next:
                 break
             if "<h2>" in line:
                 _next = True
         if _next:
-            search_result = line[0:line.find("<br>")]
+            if "<br>" in line:
+                search_result = line[0:line.find("<br>")]
+            else:
+                search_result = line
             if search_result == "":
                 search_result = "--none--"
     else:
