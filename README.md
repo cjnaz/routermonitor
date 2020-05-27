@@ -75,6 +75,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 
 ## Version history
 
+- 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 - 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
 - 200523 v0.2  Track host name changes, support single quotes in notes, support older subprocess.run() output capture.
 - 200426 v0.1  New
