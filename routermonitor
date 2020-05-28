@@ -68,11 +68,6 @@ def main():
             found = True
             break
 
-
-    print(lookup_MAC(args.MAC))
-    exit()
-
-
     if found and args.create_db:
         db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
         db_connection.commit()
