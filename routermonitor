@@ -8,13 +8,14 @@ Setup requirements:
     ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
 """
 
-__version__ = "v0.2.2 200527"
+__version__ = "v0.3 200530"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2019-2020
 #
+# 200530 v0.3   Added database record search
 # 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 # 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
 # 200522 v0.2  Track host name changes, support single quotes in notes, support older subprocess.checkoutput()
@@ -95,8 +96,8 @@ def main():
 
 
     # List known clients from database
-    if args.list_db:
-        get_database_clients(dump=True)
+    if args.list_db or args.SearchTerm != None:
+        get_database_clients(dump=True, search=args.SearchTerm)
         sys.exit()
 
 
@@ -164,7 +165,7 @@ def main():
         sys.exit()
 
 
-def get_database_clients(dump=False):
+def get_database_clients(dump=False, search=None):
     """ Get clients currently in the database, return a sorted dictionary of dictionaries, keyed by MAC
         {
             MAC:  { hostname:, IP:, expiry:, first_seen:, notes: }
@@ -185,17 +186,34 @@ def get_database_clients(dump=False):
     clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
-        print(f"{'Hostname':<25}  {'First seen':<24}  {'Current IP':<13}  {'IP Expiry':<24}  {'MAC':<17}  {'MAC Org Unique ID':<30}  {'Notes'}")
+        first=True
+        if search == None:
+            search = ""
+        search = search.lower()
+        count = 0
         for MAC in clients_list:
-            print("{:<25}  {:<24}  {:<13}  {:<24}  {:<17}  {:<30}  {}".format(
-                clients_list[MAC]['hostname'],
-                clients_list[MAC]['first_seen'],
-                clients_list[MAC]['IP'],
-                clients_list[MAC]['expiry'],
-                MAC,
-                clients_list[MAC]['MACOUI'],
-                clients_list[MAC]['notes']))
-        print (f"  <{db_cursor.rowcount}>  known clients.")
+            if search=="" or \
+                        search in MAC or \
+                        search in clients_list[MAC]['hostname'].lower() or \
+                        search in clients_list[MAC]['IP'] or \
+                        search in clients_list[MAC]['expiry'].lower() or \
+                        search in clients_list[MAC]['first_seen'].lower() or \
+                        search in clients_list[MAC]['MACOUI'].lower() or \
+                        search in clients_list[MAC]['notes'].lower():
+                count += 1
+                if first:
+                    print(f"{'Hostname':<25}  {'First seen':<24}  {'Current IP':<13}  {'IP Expiry':<24}  {'MAC':<17}  {'MAC Org Unique ID':<30}  {'Notes'}")
+                    first = False
+                print("{:<25}  {:<24}  {:<13}  {:<24}  {:<17}  {:<30}  {}".format(
+                    clients_list[MAC]['hostname'],
+                    clients_list[MAC]['first_seen'],
+                    clients_list[MAC]['IP'],
+                    clients_list[MAC]['expiry'],
+                    MAC,
+                    clients_list[MAC]['MACOUI'],
+                    clients_list[MAC]['notes']))
+        # print (f"  <{db_cursor.rowcount}>  known clients.")
+        print (f"  <{count}>  known clients.")
 
     return clients_list
 
@@ -249,7 +267,6 @@ def lookup_MAC(MAC):
     if r.status_code == 200:
         _next = False
         for line in r.text.split("\n"):
-            print (line)
             if _next:
                 break
             if "<h2>" in line:
@@ -270,11 +287,13 @@ def lookup_MAC(MAC):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('SearchTerm', nargs='?',
+                        help="Print database records containing this text.")
     parser.add_argument('-u', '--update', action="store_true",
                         help="Check the router for new connections and update database.")
     parser.add_argument('-l', '--list-db', action='store_true',
                         help="Print known clients on the network from the database.")
-    parser.add_argument('--list-router', action='store_true',
+    parser.add_argument('-r', '--list-router', action='store_true',
                         help="Print known clients on the network from the router.")
     parser.add_argument('--create-db', action='store_true',
                         help="Create a fresh database and populate it with the current clients.")
@@ -287,7 +306,7 @@ if __name__ == '__main__':
     parser.add_argument('-V', '--version', action='version', version='%(prog)s ' + __version__,
                         help="Return version number and exit.")
 
-    if len(sys.argv)==1:      # Useful for empty command line help
+    if len(sys.argv)==1:
         parser.print_help()
         sys.exit()
 

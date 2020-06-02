@@ -9,13 +9,14 @@ database.  Any new clients found on the network result in a text message notific
 known clients is tracked by MAC address.  Clients may be manually deleted from the database (i.e., *That laptop went in the tub with kids!* (long gone)).  No changes are ever made on the router.
 - Some hostnames are ambiguous, such as '*' and 'android-2ab8700dff69dbfd'.  Notes may be manually added 
 for each tracked client. 
-- The Organization Unique ID for For each devices' MAC address is looked up and added to the database, often providing enough info to identify strange devices.
+- The Organization Unique ID for for each devices' MAC address is looked up and added to the database, often providing enough info to identify strange devices.
 
 ## Usage
 ```
-$ routermonitor -h
-usage: routermonitor [-h] [-u] [-l] [--list-router] [--create-db]
-                     [-a ADD_NOTE] [--delete] [-M MAC] [-V]
+$ ./routermonitor -h
+usage: routermonitor [-h] [-u] [-l] [-r] [--create-db] [-a ADD_NOTE]
+                     [--delete] [-M MAC] [-V]
+                     [SearchTerm]
 
 Monitor for new devices/clients on the network.
 
@@ -25,11 +26,14 @@ and any new clients are identified and a notification is sent.
 Setup requirements:
     ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
 
+positional arguments:
+  SearchTerm            Print database records containing this text.
+
 optional arguments:
   -h, --help            show this help message and exit
   -u, --update          Check the router for new connections and update database.
   -l, --list-db         Print known clients on the network from the database.
-  --list-router         Print known clients on the network from the router.
+  -r, --list-router     Print known clients on the network from the router.
   --create-db           Create a fresh database and populate it with the current clients.
   -a ADD_NOTE, --add-note ADD_NOTE
                         Add a note to the db for the specified --MAC.
@@ -58,16 +62,17 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 ```
 ## Setup and Usage notes
 - Supported on Python3 only.  Developed on Centos 7.8 with Python 3.6.8.  This tool _may_ work on Python 2.7 and _may_ work on Windows - again, not supported.
-- Install the Python mysql-connector and requests library
+- Install the Python mysql-connector and requests libraries.
 - Set up SSH access from your host machine to your router - Enable SSH access on your router, generate a local key (ssh-keygen), and push it to the router (ssh-copy-id).
-- Enter config info in the `config.cfg` file.
-- Set up a mysql/mariadb login and create a database `router` with access permissions, per your settings in config.cfg.
+- Edit/enter the config info in the `config.cfg` file.
+- Set up a mysql/mariadb login and create a database `router` with access permissions, per your `DB_*` settings in config.cfg.
 - On first run the database will be populated.
-- Do `--add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`
+- Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
 - Set up a CRON job to run `routermonitor --update` periodically, such as hourly.
-- `./routermonitor --list-db` provides a dump of all known clients over time.
-- `./routermonitor --list-router` provides a dump of the currently known clients on the router.
-- When run with `--update`, any new clients on the network are added to the database and a text message notification is sent (see config.cfg).  Any changes in IP or IP Expiry time are logged to log.txt at the INFO level.  See `LoggingLevel` in config.cfg.
+- `./routermonitor --list-db` provides a list of all known clients over time.
+- `./routermonitor --list-router` provides a list of the currently known clients on the router.
+- `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field - two in the above example output. `./routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
+- `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see config.cfg).  Any changes in IP or IP Expiry time are logged to log.txt at the INFO level.  See `LoggingLevel` in config.cfg.
 
 
 ## Known issues:
@@ -75,6 +80,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 
 ## Version history
 
+- 200530 v0.3   Added database record search
 - 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 - 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
 - 200523 v0.2  Track host name changes, support single quotes in notes, support older subprocess.run() output capture.
