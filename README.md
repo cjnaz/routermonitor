@@ -14,8 +14,8 @@ for each tracked client.
 ## Usage
 ```
 $ ./routermonitor -h
-usage: routermonitor [-h] [-u] [-l] [-r] [--create-db] [-a ADD_NOTE]
-                     [--delete] [-M MAC] [-V]
+usage: routermonitor [-h] [-u] [-l] [-r] [-s {hostname,IP,expiry,MAC,MACOUI}]
+                     [--create-db] [-a ADD_NOTE] [--delete] [-M MAC] [-V]
                      [SearchTerm]
 
 Monitor for new devices/clients on the network.
@@ -23,8 +23,7 @@ Monitor for new devices/clients on the network.
 The dd-wrt-based network router is queried for known DHCP clients using 
     $ ssh root@<ROUTER_IP> cat /tmp/dnsmasq.leases
 and any new clients are identified and a notification is sent.  
-Setup requirements:
-    ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
+See the README.md for setup requirements.
 
 positional arguments:
   SearchTerm            Print database records containing this text.
@@ -34,6 +33,8 @@ optional arguments:
   -u, --update          Check the router for new connections and update database.
   -l, --list-db         Print known clients on the network from the database.
   -r, --list-router     Print known clients on the network from the router.
+  -s {hostname,IP,expiry,MAC,MACOUI}, --sort-by {hostname,IP,expiry,MAC,MACOUI}
+                        Sort --list-db and --list-router output.  Default 'MAC'.
   --create-db           Create a fresh database and populate it with the current clients.
   -a ADD_NOTE, --add-note ADD_NOTE
                         Add a note to the db for the specified --MAC.
@@ -44,7 +45,7 @@ optional arguments:
 
 ## Example output
 ```
-$ routermonitor -l
+$ routermonitor --list-db
 Hostname                   First seen                Current IP     IP Expiry                 MAC                MAC Org Unique ID               Notes
 Denon-AVR-X1600H           Fri May 22 18:23:30 2020  192.168.1.112  Sun May 24 10:42:07 2020  00:05:cd:8a:17:8d  Denon, Ltd.                     -
 Galaxy-S10-jen             Fri May 22 18:23:33 2020  192.168.1.114  Fri May 22 18:33:29 2020  10:98:c3:80:bf:b2  Murata Manufacturing Co., Ltd.  -
@@ -69,8 +70,8 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 - On first run the database will be populated.
 - Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
 - Set up a CRON job to run `routermonitor --update` periodically, such as hourly.
-- `./routermonitor --list-db` provides a list of all known clients over time.
-- `./routermonitor --list-router` provides a list of the currently known clients on the router.
+- `./routermonitor --list-db` provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, expiry, or MACOUI (default sort by MAC address).
+- `./routermonitor --list-router` provides a list of the currently known DHCP clients on the router.  `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the router).
 - `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field - two in the above example output. `./routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
 - `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see config.cfg).  Any changes in IP or IP Expiry time are logged to log.txt at the INFO level.  See `LoggingLevel` in config.cfg.
 
@@ -80,6 +81,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 
 ## Version history
 
+- 200715 v0.4   Added --sort-by.
 - 200530 v0.3   Added database record search
 - 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 - 200526 v0.2.1 Bug fix for finding not just first new device on an update run.

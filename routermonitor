@@ -4,17 +4,17 @@
 The dd-wrt-based network router is queried for known DHCP clients using 
     $ ssh root@<ROUTER_IP> cat /tmp/dnsmasq.leases
 and any new clients are identified and a notification is sent.  
-Setup requirements:
-    ssh access to the router must be enabled (ssh-keygen, ssh-copy-id).
+See the README.md for setup requirements.
 """
 
-__version__ = "v0.3 200530"
+__version__ = "v0.4 200715"
 
 
 #==========================================================
 #
-#  Chris Nelson, January 2019-2020
+#  Chris Nelson, January 2020
 #
+# 200715 v0.4   Added --sort-by
 # 200530 v0.3   Added database record search
 # 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 # 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
@@ -168,7 +168,7 @@ def main():
 def get_database_clients(dump=False, search=None):
     """ Get clients currently in the database, return a sorted dictionary of dictionaries, keyed by MAC
         {
-            MAC:  { hostname:, IP:, expiry:, first_seen:, notes: }
+            MAC:  { hostname:, IP:, expiry:, first_seen:, notes:, MACOUI}
         }
     """
     db_connection = mysql.connector.connect(database=getcfg("DB_DB"), host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
@@ -183,9 +183,13 @@ def get_database_clients(dump=False, search=None):
             "first_seen": row['first_seen'],
             "notes":      row['notes'],
             "MACOUI":     row['MACOUI'] }
-    clients_list = collections.OrderedDict(sorted(clients_list.items()))
+    # clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
+        if args.sort_by == 'MAC':
+            clients_list = collections.OrderedDict(sorted(clients_list.items()))
+        else:
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
         first=True
         if search == None:
             search = ""
@@ -246,9 +250,17 @@ def get_router_clients(dump=False):
         else:
             if len(line) > 0:
                 print ("ERROR in get_router_clients:  This line looks bogus:\n  ", line)
-    clients_list = collections.OrderedDict(sorted(clients_list.items()))
+    # clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
+        if args.sort_by == 'MAC':
+            clients_list = collections.OrderedDict(sorted(clients_list.items()))
+        elif args.sort_by in "hostname IP expiry":
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
+        else:
+            print ("ERROR in get_router_clients for --list-router:  --sort-by must be one of MAC, hostname, IP, or expiry")
+            sys.exit()
+
         count = 0
         for client in clients_list:
             count += 1
@@ -295,6 +307,8 @@ if __name__ == '__main__':
                         help="Print known clients on the network from the database.")
     parser.add_argument('-r', '--list-router', action='store_true',
                         help="Print known clients on the network from the router.")
+    parser.add_argument('-s', '--sort-by', choices=['hostname', 'IP', 'expiry', 'MAC', 'MACOUI'], default='MAC',
+                        help="Sort --list-db and --list-router output.  Default 'MAC'.")
     parser.add_argument('--create-db', action='store_true',
                         help="Create a fresh database and populate it with the current clients.")
     parser.add_argument('-a', '--add-note', type=str,
