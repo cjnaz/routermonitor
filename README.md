@@ -15,7 +15,8 @@ for each tracked client.
 ```
 $ ./routermonitor -h
 usage: routermonitor [-h] [-u] [-l] [-r] [-s {hostname,IP,expiry,MAC,MACOUI}]
-                     [--create-db] [-a ADD_NOTE] [--delete] [-M MAC] [-V]
+                     [--create-db] [-a ADD_NOTE] [--delete] [-M MAC]
+                     [--service] [-V]
                      [SearchTerm]
 
 Monitor for new devices/clients on the network.
@@ -40,6 +41,7 @@ optional arguments:
                         Add a note to the db for the specified --MAC.
   --delete              Delete from the db the specified --MAC.
   -M MAC, --MAC MAC     MAC address in the database to be modified or deleted.
+  --service             Run updates in an endless loop for use as a systemd service.
   -V, --version         Return version number and exit.
 ```
 
@@ -62,27 +64,30 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
   <23>  known clients.
 ```
 ## Setup and Usage notes
-- Supported on Python3 only.  Developed on Centos 7.8 with Python 3.6.8.  This tool _may_ work on Python 2.7 and _may_ work on Windows - again, not supported.
+- Supported on Python3 only.  Developed on Centos 7.8 with Python 3.6.8.  This tool _may_ work on Windows - again, not supported.
 - Install the Python mysql-connector and requests libraries.
 - Set up SSH access from your host machine to your router - Enable SSH access on your router, generate a local key (ssh-keygen), and push it to the router (ssh-copy-id).
 - Edit/enter the config info in the `config.cfg` file.
 - Set up a mysql/mariadb login and create a database `router` with access permissions, per your `DB_*` settings in config.cfg.
 - On first run the database will be populated.
 - Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
-- Set up a CRON job to run `routermonitor --update` periodically, such as hourly.
 - `./routermonitor --list-db` provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, expiry, or MACOUI (default sort by MAC address).
 - `./routermonitor --list-router` provides a list of the currently known DHCP clients on the router.  `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the router).
 - `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field - two in the above example output. `./routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
 - `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see config.cfg).  Any changes in IP or IP Expiry time are logged to log.txt at the INFO level.  See `LoggingLevel` in config.cfg.
+- Set up a CRON job to run `routermonitor --update` periodically, such as hourly.
+- Alternately, install routermonitor as a systemd service, which periodically does updates.  An example `routermonitor.service` file is provided.  Control the update interval in your config.cfg file.  
 
 
 ## Known issues:
-- none
+- Sort by expiry sorts by the alpha day of the week - sorta bogus.  I plan to change the DB storage of timestamps to epoch values, which will fix
+the time value sort, and to add a `firstseen` sort.
 
 ## Version history
 
-- 200715 v0.4   Added --sort-by.
-- 200530 v0.3   Added database record search
+- 210125 V0.5   Added `--service` mode.
+- 200715 v0.4   Added `--sort-by`.
+- 200530 v0.3   Added database record search.
 - 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 - 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
 - 200523 v0.2  Track host name changes, support single quotes in notes, support older subprocess.run() output capture.

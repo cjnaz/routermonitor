@@ -1,9 +1,10 @@
-#!/usr/bin/env python
-"""Script Funcs (version 3)
+#!/usr/bin/env python3
+"""Funcs (gen 3)
 A collection of support funcs for simplifying writing basic tool scripts.
 
 Functions:
-    setuplogging             - Set up default logger 
+    setuplogging             - Set up default logger
+    funcs3_min_version_check - Checker for funcs3 module min version
     loadconfig, JAM, getcfg  - Config file handlers
     requestlock, releaselock - Cross-tool/process safety handshake
     snd_notif, snd_email     - Send text message and email messages
@@ -18,16 +19,19 @@ Globals:
         from a different pwd, such as when running from cron.
 """
 
-__func3_version__ = "v0.4 200522"
+funcs3_version = "V0.5 201203"
 
 #==========================================================
 #
-#  Chris Nelson, January 2019-2020
+#  Chris Nelson, 2018-2020
 #
-# 200522 v0.4  Reworked loadconfig & JAM with re to support ':' and '=' delimiters.
-# 200426 v0.3  Updated for Python 3. Python 2 unsupported.  Using tempfile module.
-# 190319 v0.2  Added email port selection and SSL/TLS support
-# 180520 v0.1  New
+# V0.5 201203  Passing None to setuplogging logfile directs output to stdout.  Added funcs3_min_version_check().
+# V0.4 201028  Reworked loadconfig & JAM with re to support ':' and '=' delimiters.
+#   loadconfig may be re-called and will re-load if the config file mod time has changed.
+#   Added '/' to progdir.  Requires Python3.
+# V0.3 200426  Updated for Python 3. Python 2 unsupported.  Using tempfile module.
+# V0.2 190319  Added email port selection and SSL/TLS support
+# V0.1 180520  New
 #
 # Changes pending
 #   
@@ -47,9 +51,11 @@ import __main__
 
 ### Project globals
 cfg = {}
-progdir = os.path.dirname(os.path.realpath(__main__.__file__))
+progdir = os.path.dirname(os.path.realpath(__main__.__file__)) + "/"
+config_epoch = 0
 
 
+# ***** Logging setup *****
 def setuplogging (logfile= 'log.txt'):
     """Set up logging.
 
@@ -58,14 +64,30 @@ def setuplogging (logfile= 'log.txt'):
         The default log file is <main file path>/log.txt.
         Absolute or relative path (from the main program directory) may
         be specified.
+        Passing None causes output to bge sent to stdout.
     """
 
-    if os.path.isabs(logfile):  logpath = logfile
-    else:                       logpath = progdir + '/' + logfile
+    if logfile == None:
+        logging.basicConfig(format='%(message)s')
+    else:
+        if os.path.isabs(logfile):  logpath = logfile
+        else:                       logpath = progdir + logfile
+        logging.basicConfig(filename=logpath, format='%(asctime)s/%(module)s/%(funcName)s/%(levelname)s:  %(message)s')
 
-    logging.basicConfig(filename=logpath,
-        format='%(asctime)s/%(module)s/%(funcName)s/%(levelname)s:  %(message)s')
 
+# ***** funcs3 minimum version checker *****
+def funcs3_min_version_check(min_version):
+    """Compare current funcs3 module version against passed in minimum expected version.
+    Return True if current version >= passed in min version.
+    """
+    current_version = float(funcs3_version[1:4])
+    if current_version >= min_version:
+        return True
+    else:
+        return False
+
+
+# ***** Config file functions loadconfig, JAM, getcfg *****
 cfgline = re.compile(r"([\w]+)[\s=:]+(.*)")
 def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
     """Read config file into dictionary cfg.
@@ -81,15 +103,24 @@ def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
     Logging module levels: 10:DEBUG, 20:INFO, 30:WARNING, 40:ERROR, 50:CRITICAL
     Optional LoggingLevel in the config file will set the logging level after
     the config has been loaded.  The default logging level is 30:WARNING.
+
+    loadconfig may be called periodically by the main script.  loadconfig detects
+    if the config file modification time has changed and reloads the file, as needed.
     """
+    global config_epoch
+    xx = os.path.getmtime(cfgfile)
+    if config_epoch == xx:
+        logging.debug("loadconfig reload skipped")
+        return
+    config_epoch = xx
 
     logging.getLogger().setLevel(cfgloglevel)
 
     if os.path.isabs(cfgfile):  config = cfgfile
-    else:                       config = progdir + '/' + cfgfile
+    else:                       config = progdir + cfgfile
 
     if not os.path.exists(config):
-        logging.error("loadConfig:  Config file <{}> does not exist.  Aborting.".format(config))
+        logging.error("loadconfig:  Config file <{}> does not exist.  Aborting.".format(config))
         sys.exit(1)
     
     logging.info ('Loading {}'.format(config))
@@ -104,7 +135,7 @@ def loadconfig(cfgfile= 'config.cfg', cfgloglevel= 30):
                     except:
                         cfg[out.group(1)] = out.group(2)        # append string to dict
                     logging.debug ("Loaded {} = {}".format(out.group(1), cfg[out.group(1)]))
-                else: logging.warning ("loadConfig error on line {}.  Line skipped.".format(line))
+                else: logging.warning ("loadconfig error on line {}.  Line skipped.".format(line))
 
     if 'LoggingLevel' in cfg:                           # LoggingLevel from config file sets the following log level
         ll = cfg['LoggingLevel']
@@ -122,8 +153,8 @@ def JAM():
     The logging level may be changed by setting/changing LoggingLevel.
     """
     
-    if os.path.exists(progdir + '/JAM'):
-        with io.open(progdir + '/JAM', encoding='utf8') as ifile:
+    if os.path.exists(progdir + 'JAM'):
+        with io.open(progdir + 'JAM', encoding='utf8') as ifile:
             for line in ifile:
                 line = line[0:line.find('#')].lstrip().rstrip() # throw away comment and any leading & trailing whitespace
                 if len(line) > 0:
@@ -135,8 +166,8 @@ def JAM():
                             cfg[out.group(1)] = out.group(2)        # append string to dict
                         logging.warning ("JAMed {} = {}".format(out.group(1), cfg[out.group(1)]))
                     else: logging.warning ("JAM error on line {}.  Line skipped.".format(line))
-        if os.path.exists(progdir + '/JAMed'): os.remove(progdir + '/JAMed')
-        os.rename (progdir + '/JAM', progdir + '/JAMed')
+        if os.path.exists(progdir + 'JAMed'): os.remove(progdir + 'JAMed')
+        os.rename (progdir + 'JAM', progdir + 'JAMed')
 
     if 'LoggingLevel' in cfg:                           # LoggingLevel from config file sets the following log level
         ll = cfg['LoggingLevel']
@@ -165,6 +196,7 @@ def getcfg(param, default=None):
         sys.exit(1)
 
 
+# ***** Lock file management functions *****
 LOCKFILE_DEFAULT = "funcs3_LOCK"
 def requestlock(caller, lockfile=LOCKFILE_DEFAULT):
     """Lock file request.
@@ -207,6 +239,7 @@ def releaselock(lockfile=LOCKFILE_DEFAULT):
         return -1
 
 
+#***** Notification and email functions *****
 def snd_notif(subj='Notification message', msg='', log=False):
     """Send a text message using the cfg NotifList from the config file.
 
@@ -317,23 +350,30 @@ if __name__ == '__main__':
     setuplogging(logfile= 'testlogfile.txt')
     loadconfig (cfgfile='testcfg.cfg', cfgloglevel=10)
 
-    # Tests for loadConfig, getcfg
-    for key in cfg:
-        print ("{:>15} = {}".format(key, cfg[key]))
+    # # Tests for funcs3_min_version_check
+    # if not funcs3_min_version_check(2.0):
+    #     print(f"ERROR:  funcs3 module must be at least version 2.0.  Found <{funcs3_version}>.")
+    # if funcs3_min_version_check(0.5):
+    #     print(f"funcs3_min_version_check passes.  Found <{funcs3_version}>.")
 
-    print ("Testing getcfg - Not in cfg with default: <{}>".format(getcfg('NotInCfg', '--default--')))
-    print ("Testing getcfg - Not in cfg with no default... will cause an exit()")
+
+    # # Tests for loadconfig, getcfg
+    # for key in cfg:
+    #     print ("{:>15} = {}".format(key, cfg[key]))
+
+    # print ("Testing getcfg - Not in cfg with default: <{}>".format(getcfg('NotInCfg', '--default--')))
+    # print ("Testing getcfg - Not in cfg with no default... will cause an exit()")
     # getcfg('NotInCfg-NoDef')
 
 
-    # Tests for JAM
-    with io.open("JAM", 'w') as ofile:
-        ofile.write("JammedInt 1234\n")
-        ofile.write("JammedStr This is a text string # with a comment on the end\n")
-        ofile.write("LoggingLevel 10\n")
-    JAM()
-    print ("JammedInt = <{}>, {}".format(getcfg('JammedInt'), type(getcfg('JammedInt'))))
-    print ("JammedStr = <{}>, {}".format(getcfg('JammedStr'), type(getcfg('JammedStr'))))
+    # # Tests for JAM
+    # with io.open("JAM", 'w') as ofile:
+    #     ofile.write("JammedInt 1234\n")
+    #     ofile.write("JammedStr This is a text string # with a comment on the end\n")
+    #     ofile.write("LoggingLevel 10\n")
+    # JAM()
+    # print ("JammedInt = <{}>, {}".format(getcfg('JammedInt'), type(getcfg('JammedInt'))))
+    # print ("JammedStr = <{}>, {}".format(getcfg('JammedStr'), type(getcfg('JammedStr'))))
 
 
     # # Tests for sndNotif and snd_email
