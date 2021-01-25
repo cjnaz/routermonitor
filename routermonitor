@@ -3,23 +3,24 @@
 
 The dd-wrt-based network router is queried for known DHCP clients using 
     $ ssh root@<ROUTER_IP> cat /tmp/dnsmasq.leases
-and any new clients are identified and a notification is sent.  
+Any new clients are identified and a notification is sent.  
 See the README.md for setup requirements.
 """
 
-__version__ = "v0.4 200715"
+__version__ = "V0.5 210125"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2020
 #
+# 210125 V0.5   Added --service mode
 # 200715 v0.4   Added --sort-by
 # 200530 v0.3   Added database record search
 # 200527 v0.2.2 Bug fix for single line lookup_MAC response losing last letter.
 # 200526 v0.2.1 Bug fix for finding not just first new device on an update run.
-# 200522 v0.2  Track host name changes, support single quotes in notes, support older subprocess.checkoutput()
-# 200426 v0.1  New
+# 200522 v0.2   Track host name changes, support single quotes in notes, support older subprocess.checkoutput()
+# 200426 v0.1   New
 #
 # Changes pending
 #   
@@ -30,19 +31,23 @@ import subprocess
 import sys
 import re
 import time
+import os.path
 import collections
 import mysql.connector
 import requests
-import logging
-from funcs3 import setuplogging, loadconfig, getcfg, snd_notif
+
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../funcs3/'))    # funcs3 in peer dir
+from funcs3 import setuplogging, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version
 
 # Configs / Constants
+FUNCS3_MIN_VERSION = 0.5
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'config.cfg')
 # See config.cfg for DB params
 
 py_version = float(sys.version_info.major) + float(sys.version_info.minor)/10
 
 setuplogging(logfile= 'log.txt')
-loadconfig  (cfgfile='config.cfg')
+loadconfig  (cfgfile= CONFIG_FILE)
 
 
 def main():
@@ -101,6 +106,12 @@ def main():
         sys.exit()
 
 
+    # List known clients from router
+    if args.list_router:
+        get_router_clients(dump=True)
+        sys.exit()
+
+
     # Add a note for a client to the database
     if args.add_note is not None:
         if args.MAC is None:
@@ -133,7 +144,7 @@ def main():
 
 
     # Update database from router
-    if args.update:
+    def do_update():
         router_clients = get_router_clients()
         database_clients = get_database_clients()
         for MAC in router_clients:
@@ -156,13 +167,21 @@ def main():
                 db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{router_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
         db_connection.commit()
+
+    if args.update:
+        do_update()
         sys.exit()
 
 
-    # List known clients from router
-    if args.list_router:
-        get_router_clients(dump=True)
-        sys.exit()
+    # Service mode
+    if args.service:
+        while 1:
+            do_update()
+            time.sleep(getcfg("UpdateInterval"))
+
+
+    print ("Nothing to do.  Use one of --list-db, --list-router, --update, --add-note, --delete, or --create-db.")
+    sys.exit(1)
 
 
 def get_database_clients(dump=False, search=None):
@@ -183,7 +202,6 @@ def get_database_clients(dump=False, search=None):
             "first_seen": row['first_seen'],
             "notes":      row['notes'],
             "MACOUI":     row['MACOUI'] }
-    # clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
         if args.sort_by == 'MAC':
@@ -216,7 +234,6 @@ def get_database_clients(dump=False, search=None):
                     MAC,
                     clients_list[MAC]['MACOUI'],
                     clients_list[MAC]['notes']))
-        # print (f"  <{db_cursor.rowcount}>  known clients.")
         print (f"  <{count}>  known clients.")
 
     return clients_list
@@ -250,7 +267,6 @@ def get_router_clients(dump=False):
         else:
             if len(line) > 0:
                 print ("ERROR in get_router_clients:  This line looks bogus:\n  ", line)
-    # clients_list = collections.OrderedDict(sorted(clients_list.items()))
 
     if dump:
         if args.sort_by == 'MAC':
@@ -259,7 +275,7 @@ def get_router_clients(dump=False):
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
         else:
             print ("ERROR in get_router_clients for --list-router:  --sort-by must be one of MAC, hostname, IP, or expiry")
-            sys.exit()
+            sys.exit(1)
 
         count = 0
         for client in clients_list:
@@ -317,6 +333,8 @@ if __name__ == '__main__':
                         help="Delete from the db the specified --MAC.")
     parser.add_argument('-M', '--MAC', type=str,
                         help="MAC address in the database to be modified or deleted.")
+    parser.add_argument('--service', action='store_true',
+                        help="Run updates in an endless loop for use as a systemd service.")
     parser.add_argument('-V', '--version', action='version', version='%(prog)s ' + __version__,
                         help="Return version number and exit.")
 
@@ -325,6 +343,10 @@ if __name__ == '__main__':
         sys.exit()
 
     args = parser.parse_args()
+
+    if not funcs3_min_version_check(FUNCS3_MIN_VERSION):
+        print(f"ERROR:  funcs3 module must be at least version <V{FUNCS3_MIN_VERSION}>.  Found <{funcs3_version}>.")
+        sys.exit(1)
 
     main()
     sys.exit()
