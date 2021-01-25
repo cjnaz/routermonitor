@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/python3 /<path to>/routermonitor --service
-User=cjn
+User=<yourusername>
 
 [Install]
 WantedBy=multi-user.target
