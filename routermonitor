@@ -218,9 +218,13 @@ def main():
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{router_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
             if router_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {router_clients[MAC]['expiry']}")
+                if router_clients[MAC]['expiry'] == 0:
+                    expiry = "static lease"
+                else:
+                    expiry = time.asctime(time.localtime(router_clients[MAC]['expiry']))
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
                 logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{router_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
+                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = {router_clients[MAC]['expiry']} WHERE MAC = '{MAC}'")
 
         db_connection.commit()
 
