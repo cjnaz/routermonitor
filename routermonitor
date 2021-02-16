@@ -7,13 +7,14 @@ Any new clients are identified and a notification is sent.
 See the README.md for setup requirements.
 """
 
-__version__ = "V0.5 210125"
+__version__ = "V0.6 210215"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2020
 #
+# 210215 V0.6   Added --swizzle-db, --swizzle-commit, and reworked first_seen and expiry to Int storage.
 # 210125 V0.5   Added --service mode
 # 200715 v0.4   Added --sort-by
 # 200530 v0.3   Added database record search
@@ -31,13 +32,14 @@ import subprocess
 import sys
 import re
 import time
+import datetime
 import os.path
 import collections
 import mysql.connector
 import requests
 
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../funcs3/'))    # funcs3 in peer dir
-from funcs3 import setuplogging, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version
+from funcs3 import setuplogging, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version, cfg
 
 # Configs / Constants
 FUNCS3_MIN_VERSION = 0.5
@@ -78,25 +80,79 @@ def main():
         db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
         db_connection.commit()
 
+    db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(50), first_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(30)"
     def db_add_client(MAC, record):
-        cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\', \'{}\')".format(
+        cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
             getcfg('DB_TABLE'),
             MAC,
             lookup_MAC(MAC),
             record['hostname'],
             "-",
-            time.asctime(time.localtime()),
+            time.time(),
             record['IP'],
             record['expiry'])
         db_cursor.execute(cmd)
 
     if not found or args.create_db:
         router_clients = get_router_clients()
-        db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(50), first_seen VARCHAR(24), expiry VARCHAR(24), IP VARCHAR(15), MACOUI VARCHAR(30)"
         db_cursor.execute(f"CREATE TABLE {getcfg('DB_TABLE')} ({db_fields})")
 
         for MAC in router_clients:
             db_add_client (MAC, router_clients[MAC])
+        db_connection.commit()
+
+
+    # Swizzle database table structure or contents
+    if args.swizzle_db:
+        # When upgrading, cfg[DB_TABLE] will reference a table in the old format, and a _new table will be created in the new format (and recreated on successive runs).
+        # This code will deal with the old to new adjustments when building the _new table.
+        # If not '--commit'ed, cfg[DB_TABLE] is jammed with the _new table name.
+        # If '--commit'ed, the original table is renamed _bak, and _new is renamed to match as defined in the config file.
+        # Use model:
+        #   './routermonitor -l --swizzle-db' while debugging database modifications.  Creates an _new table and displays it.
+        #   Change the config file to reference the _new table while debugging new code, and run without --swizzle-db.
+        #   Then finally './routermonitor --swizzle-db --swizzle-commit'.
+
+        table_new = getcfg("DB_TABLE") + "_new"
+        db_cursor.execute("SHOW TABLES")
+        for row in db_cursor:
+            if table_new in row['Tables_in_' + getcfg('DB_DB')]:
+                print(f"Swizzle info:  Found existing new table <{table_new}>.  Deleting.")
+                db_cursor.execute(f"DROP TABLE {table_new}")
+                break
+        db_cursor.execute(f"CREATE TABLE {table_new} ({db_fields})")
+
+        # Make adjustments
+        database_clients = get_database_clients()
+        epoch1970 = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)     # tz aware
+        for MAC in database_clients:
+            first_seen = database_clients[MAC]['first_seen'] + " -0700"
+            first_seenI = int((datetime.datetime.strptime(first_seen, "%a %b %d %H:%M:%S %Y %z") - epoch1970).total_seconds())
+
+            expiry = database_clients[MAC]['expiry']
+            if expiry == "static lease":
+                expiryI = 0
+            else:
+                expiry += " -0700"
+                expiryI = int((datetime.datetime.strptime(expiry, "%a %b %d %H:%M:%S %Y %z") - epoch1970).total_seconds())
+
+            cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
+                table_new,
+                MAC,
+                database_clients[MAC]['MACOUI'],
+                database_clients[MAC]['hostname'],
+                database_clients[MAC]['notes'].replace("'", "''"),
+                first_seenI,
+                database_clients[MAC]['IP'],
+                expiryI )
+            db_cursor.execute(cmd)
+        db_connection.commit()
+
+        if not args.swizzle_commit:
+            cfg['DB_TABLE'] = table_new
+        else:
+            db_cursor.execute(f"RENAME TABLE {getcfg('DB_TABLE')} to {getcfg('DB_TABLE')+'_bak'}")
+            db_cursor.execute(f"RENAME TABLE {table_new} to {getcfg('DB_TABLE')}")
         db_connection.commit()
 
 
@@ -175,7 +231,9 @@ def main():
 
     # Service mode
     if args.service:
+        logging.warning(f"{__file__} {__version__} started")
         while 1:
+            loadconfig  (cfgfile= CONFIG_FILE)      # Reload, allowing on-the-fly LoggingLevel and UpdateInterval changes
             do_update()
             time.sleep(getcfg("UpdateInterval"))
 
@@ -185,9 +243,9 @@ def main():
 
 
 def get_database_clients(dump=False, search=None):
-    """ Get clients currently in the database, return a sorted dictionary of dictionaries, keyed by MAC
+    """ Get clients currently in the database, return a dictionary of dictionaries, keyed by MAC
         {
-            MAC:  { hostname:, IP:, expiry:, first_seen:, notes:, MACOUI}
+            MAC:  { hostname:, IP:, expiry:, first_seen:, notes:, MACOUI: }
         }
     """
     db_connection = mysql.connector.connect(database=getcfg("DB_DB"), host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
@@ -206,6 +264,8 @@ def get_database_clients(dump=False, search=None):
     if dump:
         if args.sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
+        elif args.sort_by in "first_seen expiry":
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by]))
         else:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
         first=True
@@ -214,12 +274,19 @@ def get_database_clients(dump=False, search=None):
         search = search.lower()
         count = 0
         for MAC in clients_list:
+
+            first_seen = time.asctime(time.localtime(int(clients_list[MAC]['first_seen'])))
+            if clients_list[MAC]['expiry'] == 0:
+                expiry = "static lease"
+            else:
+                expiry = time.asctime(time.localtime(int(clients_list[MAC]['expiry'])))
+
             if search=="" or \
                         search in MAC or \
                         search in clients_list[MAC]['hostname'].lower() or \
                         search in clients_list[MAC]['IP'] or \
-                        search in clients_list[MAC]['expiry'].lower() or \
-                        search in clients_list[MAC]['first_seen'].lower() or \
+                        search in expiry.lower() or \
+                        search in first_seen.lower() or \
                         search in clients_list[MAC]['MACOUI'].lower() or \
                         search in clients_list[MAC]['notes'].lower():
                 count += 1
@@ -228,9 +295,9 @@ def get_database_clients(dump=False, search=None):
                     first = False
                 print("{:<25}  {:<24}  {:<13}  {:<24}  {:<17}  {:<30}  {}".format(
                     clients_list[MAC]['hostname'],
-                    clients_list[MAC]['first_seen'],
+                    first_seen,
                     clients_list[MAC]['IP'],
-                    clients_list[MAC]['expiry'],
+                    expiry,
                     MAC,
                     clients_list[MAC]['MACOUI'],
                     clients_list[MAC]['notes']))
@@ -259,11 +326,7 @@ def get_router_clients(dump=False):
     for line in clients:
         xx = line_re.match(line)
         if xx:
-            if xx.group(1) == '0':
-                expiry = "static lease"
-            else:
-                expiry = time.asctime(time.localtime(int(xx.group(1))))
-            clients_list[xx.group(2)] = {"hostname":xx.group(4), "IP":xx.group(3), "expiry":expiry}
+            clients_list[xx.group(2)] = {"hostname":xx.group(4), "IP":xx.group(3), "expiry":int(xx.group(1))}
         else:
             if len(line) > 0:
                 print ("ERROR in get_router_clients:  This line looks bogus:\n  ", line)
@@ -271,8 +334,10 @@ def get_router_clients(dump=False):
     if dump:
         if args.sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
-        elif args.sort_by in "hostname IP expiry":
+        elif args.sort_by in "hostname IP":
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
+        elif args.sort_by == "expiry":
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by]))
         else:
             print ("ERROR in get_router_clients for --list-router:  --sort-by must be one of MAC, hostname, IP, or expiry")
             sys.exit(1)
@@ -280,8 +345,12 @@ def get_router_clients(dump=False):
         count = 0
         for client in clients_list:
             count += 1
+            if clients_list[client]["expiry"] == 0:
+                expiry = "static lease"
+            else:
+                expiry = time.asctime(time.localtime(clients_list[client]["expiry"]))
             print("{:<25} {} {:<13}  {}".format(
-                clients_list[client]["expiry"],
+                expiry,
                 client, 
                 clients_list[client]["IP"],
                 clients_list[client]["hostname"]))
@@ -312,9 +381,8 @@ def lookup_MAC(MAC):
     return (search_result)
 
 
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('SearchTerm', nargs='?',
                         help="Print database records containing this text.")
     parser.add_argument('-u', '--update', action="store_true",
@@ -323,7 +391,7 @@ if __name__ == '__main__':
                         help="Print known clients on the network from the database.")
     parser.add_argument('-r', '--list-router', action='store_true',
                         help="Print known clients on the network from the router.")
-    parser.add_argument('-s', '--sort-by', choices=['hostname', 'IP', 'expiry', 'MAC', 'MACOUI'], default='MAC',
+    parser.add_argument('-s', '--sort-by', choices=['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes'], default='MAC',
                         help="Sort --list-db and --list-router output.  Default 'MAC'.")
     parser.add_argument('--create-db', action='store_true',
                         help="Create a fresh database and populate it with the current clients.")
@@ -332,9 +400,13 @@ if __name__ == '__main__':
     parser.add_argument('--delete', action='store_true',
                         help="Delete from the db the specified --MAC.")
     parser.add_argument('-M', '--MAC', type=str,
-                        help="MAC address in the database to be modified or deleted.")
+                        help="MAC address for --add-note or --delete.")
     parser.add_argument('--service', action='store_true',
                         help="Run updates in an endless loop for use as a systemd service.")
+    parser.add_argument('--swizzle-db', action='store_true',
+                        help="Upgrade db structure/content.")
+    parser.add_argument('--swizzle-commit', action='store_true',
+                        help="Make db upgrade permanent (else temporary).")
     parser.add_argument('-V', '--version', action='version', version='%(prog)s ' + __version__,
                         help="Return version number and exit.")
 

@@ -14,17 +14,19 @@ for each tracked client.
 ## Usage
 ```
 $ ./routermonitor -h
-usage: routermonitor [-h] [-u] [-l] [-r] [-s {hostname,IP,expiry,MAC,MACOUI}]
+usage: routermonitor [-h] [-u] [-l] [-r]
+                     [-s {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}]
                      [--create-db] [-a ADD_NOTE] [--delete] [-M MAC]
-                     [--service] [-V]
+                     [--service] [--swizzle-db] [--swizzle-commit] [-V]
                      [SearchTerm]
 
 Monitor for new devices/clients on the network.
 
 The dd-wrt-based network router is queried for known DHCP clients using 
     $ ssh root@<ROUTER_IP> cat /tmp/dnsmasq.leases
-and any new clients are identified and a notification is sent.  
+Any new clients are identified and a notification is sent.  
 See the README.md for setup requirements.
+V0.6 210215
 
 positional arguments:
   SearchTerm            Print database records containing this text.
@@ -34,15 +36,18 @@ optional arguments:
   -u, --update          Check the router for new connections and update database.
   -l, --list-db         Print known clients on the network from the database.
   -r, --list-router     Print known clients on the network from the router.
-  -s {hostname,IP,expiry,MAC,MACOUI}, --sort-by {hostname,IP,expiry,MAC,MACOUI}
+  -s {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}, --sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}
                         Sort --list-db and --list-router output.  Default 'MAC'.
   --create-db           Create a fresh database and populate it with the current clients.
   -a ADD_NOTE, --add-note ADD_NOTE
                         Add a note to the db for the specified --MAC.
   --delete              Delete from the db the specified --MAC.
-  -M MAC, --MAC MAC     MAC address in the database to be modified or deleted.
+  -M MAC, --MAC MAC     MAC address for --add-note or --delete.
   --service             Run updates in an endless loop for use as a systemd service.
+  --swizzle-db          Upgrade db structure/content.
+  --swizzle-commit      Make db upgrade permanent (else temporary).
   -V, --version         Return version number and exit.
+
 ```
 
 ## Example output
@@ -71,7 +76,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 - Set up a mysql/mariadb login and create a database `router` with access permissions, per your `DB_*` settings in config.cfg.
 - On first run the database will be populated.
 - Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
-- `./routermonitor --list-db` provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, expiry, or MACOUI (default sort by MAC address).
+- `./routermonitor --list-db` provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI (default sort by MAC address).
 - `./routermonitor --list-router` provides a list of the currently known DHCP clients on the router.  `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the router).
 - `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field - two in the above example output. `./routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
 - `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see config.cfg).  Any changes in IP or IP Expiry time are logged to log.txt at the INFO level.  See `LoggingLevel` in config.cfg.
@@ -80,11 +85,11 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 
 
 ## Known issues:
-- Sort by expiry sorts by the alpha day of the week - sorta bogus.  I plan to change the DB storage of timestamps to epoch values, which will fix
-the time value sort, and to add a `firstseen` sort.
+- None
 
 ## Version history
 
+- 210215 V0.6   Added --swizzle-db, --swizzle-commit, and reworked first_seen and expiry to Int storage.
 - 210125 V0.5   Added `--service` mode.
 - 200715 v0.4   Added `--sort-by`.
 - 200530 v0.3   Added database record search.
