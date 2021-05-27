@@ -7,13 +7,15 @@ Any new clients are identified and a notification is sent.
 See the README.md for setup requirements.
 """
 
-__version__ = "V0.6 210215"
+__version__ = "V0.7 210523"
 
 
 #==========================================================
 #
 #  Chris Nelson, January 2020
 #
+# 210523 V0.7   New device message tweaks, Requires funcs3 V0.7 min for import of credentials file and config reload.
+#   Added --config-file and --log-file switches
 # 210215 V0.6   Added --swizzle-db, --swizzle-commit, and reworked first_seen and expiry to Int storage.
 # 210125 V0.5   Added --service mode
 # 200715 v0.4   Added --sort-by
@@ -42,17 +44,16 @@ sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../fu
 from funcs3 import setuplogging, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version, cfg
 
 # Configs / Constants
-FUNCS3_MIN_VERSION = 0.5
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'config.cfg')
-# See config.cfg for DB params
+FUNCS3_MIN_VERSION = 0.7
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'routermonitor.cfg')
+LOG_FILE =    os.path.join(os.path.dirname(os.path.realpath(__file__)), "log_routermonitor.txt")
+
 
 py_version = float(sys.version_info.major) + float(sys.version_info.minor)/10
 
-setuplogging(logfile= 'log.txt')
-loadconfig  (cfgfile= CONFIG_FILE)
-
 
 def main():
+    loadconfig  (cfgfile= args.config_file)
 
     # Check for database access and populate if non-existing
     db_connection = mysql.connector.connect(host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
@@ -205,7 +206,10 @@ def main():
         database_clients = get_database_clients()
         for MAC in router_clients:
             if MAC not in database_clients:
-                msg = f"\n{router_clients[MAC]['hostname']}\n{router_clients[MAC]['IP']}\n{MAC}\n{lookup_MAC(MAC)}"
+                msg = f"\n  Hostname:    {router_clients[MAC]['hostname']}\
+                        \n  IP address:  {router_clients[MAC]['IP']}\
+                        \n  MAC:         {MAC}\
+                        \n  MACOUI:      {lookup_MAC(MAC)}"
                 snd_notif (subj="New LAN client found", msg=msg, log=True)
                 db_add_client (MAC, router_clients[MAC])
                 continue
@@ -218,13 +222,9 @@ def main():
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{router_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
             if router_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
-                if router_clients[MAC]['expiry'] == 0:
-                    expiry = "static lease"
-                else:
-                    expiry = time.asctime(time.localtime(router_clients[MAC]['expiry']))
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {router_clients[MAC]['expiry']}")
                 logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = {router_clients[MAC]['expiry']} WHERE MAC = '{MAC}'")
+                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{router_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
         db_connection.commit()
 
@@ -235,9 +235,9 @@ def main():
 
     # Service mode
     if args.service:
-        logging.warning(f"{__file__} {__version__} started")
+        logging.warning(f"{__file__} {__version__}")
         while 1:
-            loadconfig  (cfgfile= CONFIG_FILE)      # Reload, allowing on-the-fly LoggingLevel and UpdateInterval changes
+            loadconfig  (cfgfile= args.config_file, flush_on_reload = True, cfgloglevel=30)      # Reload, allowing on-the-fly LoggingLevel and UpdateInterval changes
             do_update()
             time.sleep(getcfg("UpdateInterval"))
 
@@ -396,7 +396,7 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--list-router', action='store_true',
                         help="Print known clients on the network from the router.")
     parser.add_argument('-s', '--sort-by', choices=['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes'], default='MAC',
-                        help="Sort --list-db and --list-router output.  Default 'MAC'.")
+                        help="Sort --list-db and --list-router output (Default 'MAC').")
     parser.add_argument('--create-db', action='store_true',
                         help="Create a fresh database and populate it with the current clients.")
     parser.add_argument('-a', '--add-note', type=str,
@@ -405,6 +405,10 @@ if __name__ == '__main__':
                         help="Delete from the db the specified --MAC.")
     parser.add_argument('-M', '--MAC', type=str,
                         help="MAC address for --add-note or --delete.")
+    parser.add_argument('--config-file', type=str, default=CONFIG_FILE,
+                        help=f"Path to the config file (Default <{CONFIG_FILE})>.")
+    parser.add_argument('--log-file', default=LOG_FILE,
+                        help=f"Path to log file (Default <{LOG_FILE}>).")
     parser.add_argument('--service', action='store_true',
                         help="Run updates in an endless loop for use as a systemd service.")
     parser.add_argument('--swizzle-db', action='store_true',
@@ -419,6 +423,11 @@ if __name__ == '__main__':
         sys.exit()
 
     args = parser.parse_args()
+
+    if not args.service:
+        setuplogging(logfile=None)
+    else:
+        setuplogging(logfile=args.log_file)
 
     if not funcs3_min_version_check(FUNCS3_MIN_VERSION):
         print(f"ERROR:  funcs3 module must be at least version <V{FUNCS3_MIN_VERSION}>.  Found <{funcs3_version}>.")
