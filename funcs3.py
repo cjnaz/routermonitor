@@ -21,22 +21,23 @@ Globals:
         from a different pwd, such as when running from cron.
 """
 
-funcs3_version = "V0.7 210523"
+funcs3_version = "V0.7a 210529"
 
 #==========================================================
 #
 #  Chris Nelson, 2018-2020
 #
-# V0.7 210523  loadconfig flush_on_reload switch added.
-# V0.6 210512  loadconfig returns True when cfg has been (re)loaded.  loadconfig supports import, flush and booleans.
+# V0.7a 210529  Bug in snd_email with log switch as logging at info level, changed to warning level.
+# V0.7  210523  loadconfig flush_on_reload switch added.
+# V0.6  210512  loadconfig returns True when cfg has been (re)loaded.  loadconfig supports import, flush and booleans.
 #   ConfigError and SndEmailError exceptions now raised rather than terminating on critical error.
-# V0.5 201203  Passing None to setuplogging logfile directs output to stdout.  Added funcs3_min_version_check().
-# V0.4 201028  Reworked loadconfig & JAM with re to support ':' and '=' delimiters.
+# V0.5  201203  Passing None to setuplogging logfile directs output to stdout.  Added funcs3_min_version_check().
+# V0.4  201028  Reworked loadconfig & JAM with re to support ':' and '=' delimiters.
 #   loadconfig may be re-called and will re-load if the config file mod time has changed.
 #   Added '/' to progdir.  Requires Python3.
-# V0.3 200426  Updated for Python 3. Python 2 unsupported.  Using tempfile module.
-# V0.2 190319  Added email port selection and SSL/TLS support
-# V0.1 180520  New
+# V0.3  200426  Updated for Python 3. Python 2 unsupported.  Using tempfile module.
+# V0.2  190319  Added email port selection and SSL/TLS support
+# V0.1  180520  New
 #
 # Changes pending
 #   
@@ -452,8 +453,8 @@ def snd_email(subj='', body='', filename='', to='', log=False):
         s.quit()
 
         if log:
-            # logging.warning (f"Email sent <{subj}>")
-            logging.info (f"Email sent <{subj}>")
+            logging.warning (f"Email sent <{subj}>")
+            # logging.info (f"Email sent <{subj}>")
         else:
             logging.debug (f"Email sent <{subj}>")
     except Exception as e:
