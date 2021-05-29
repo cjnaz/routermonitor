@@ -27,7 +27,7 @@ funcs3_version = "V0.7a 210529"
 #
 #  Chris Nelson, 2018-2020
 #
-# V0.7a 210529  Bug in snd_email with log switch as logging at info level, changed to warning level.
+# V0.7a 210529  Bug in snd_email & snd_notif with log switch as logging at info level, changed to warning level.
 # V0.7  210523  loadconfig flush_on_reload switch added.
 # V0.6  210512  loadconfig returns True when cfg has been (re)loaded.  loadconfig supports import, flush and booleans.
 #   ConfigError and SndEmailError exceptions now raised rather than terminating on critical error.
@@ -363,8 +363,8 @@ def snd_notif(subj='Notification message', msg='', log=False):
 
     xx = snd_email (subj=subj, body=msg, to='NotifList')
     if log:
-        # logging.warning (f"Notification sent <{subj}> <{msg}>")
-        logging.info (f"Notification sent <{subj}> <{msg}>")
+        logging.warning (f"Notification sent <{subj}> <{msg}>")
+        # logging.info (f"Notification sent <{subj}> <{msg}>")
     else:
         logging.debug (f"Notification sent <{subj}> <{msg}>")
     return xx
