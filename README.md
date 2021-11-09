@@ -95,6 +95,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 - None
 
 ## Version history
+- 211108 V1.1   Increased MACOUI and notes column widths to 255 in the db.  Added optional MACOUI_field_width to the config file (default 30).
 - 211107 V1.0   Added support for pfSense (now the default mode)
 - 210523 V0.7   New device message tweaks, Requires funcs3 V0.7 min for import of credentials file and config reload.
   Added --config-file and --log-file switches
