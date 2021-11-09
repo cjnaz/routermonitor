@@ -6,13 +6,14 @@ Any new clients are identified and a notification is sent.
 See the README.md for setup requirements.
 """
 
-__version__ = "V1.0 211107"
+__version__ = "V1.1 211108"
 
 
 #==========================================================
 #
-#  Chris Nelson, January 2020
+#  Chris Nelson, 2020 - 2021
 #
+# 211108 V1.1   Increased MACOUI and notes column widths to 255 in the db.  Added optional MACOUI_field_width to the config file (default 30).
 # 211107 V1.0   Added support for pfSense (now the default mode)
 # 210523 V0.7   New device message tweaks, Requires funcs3 V0.7 min for import of credentials file and config reload.
 #   Added --config-file and --log-file switches
@@ -82,7 +83,7 @@ def main():
         db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
         db_connection.commit()
 
-    db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(50), first_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(30)"
+    db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(255)"
     def db_add_client(MAC, record):
         cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
             getcfg('DB_TABLE'),
@@ -302,16 +303,11 @@ def get_database_clients(dump=False, search=None):
                         search in clients_list[MAC]['notes'].lower():
                 count += 1
                 if first:
-                    print(f"{'Hostname':<25}  {'First seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'MAC':<17}  {'MAC Org Unique ID':<30}  {'Notes'}")
+                    print(f"{'Hostname':<25}  {'First seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'MAC':<17}  "
+                        + f"{'MAC Org Unique ID':<{getcfg('MACOUI_field_width', 30)}}  {'Notes'}")                    
                     first = False
-                print("{:<25}  {:<19}  {:<15}  {:<19}  {:<17}  {:<30}  {}".format(
-                    clients_list[MAC]['hostname'],
-                    first_seen,
-                    clients_list[MAC]['IP'],
-                    expiry,
-                    MAC,
-                    clients_list[MAC]['MACOUI'],
-                    clients_list[MAC]['notes']))
+                print(f"{clients_list[MAC]['hostname']:<25}  {first_seen:<19}  {clients_list[MAC]['IP']:<15}  {expiry:<19}  {MAC:<17}  "
+                    + f"{clients_list[MAC]['MACOUI']:<{getcfg('MACOUI_field_width', 30)}}  {clients_list[MAC]['notes']}")
         print (f"  <{count}>  known clients.")
 
     return clients_list
@@ -371,11 +367,7 @@ def get_dhcp_clients(dump=False):
             else:
                 expiry = str(datetime.datetime.fromtimestamp(int(clients_list[client]["expiry"])))
 
-            print("{:<19}  {}  {:<15}  {}".format(
-                expiry,
-                client, 
-                clients_list[client]["IP"],
-                clients_list[client]["hostname"]))
+            print(f"{expiry:<19}  {client}  {clients_list[client]['IP']:<15}  {clients_list[client]['hostname']}")
         print (f"  <{count}>  known clients.")
 
     return clients_list
