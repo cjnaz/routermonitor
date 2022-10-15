@@ -14,14 +14,24 @@ for each tracked client.
 
 Note:  _router_ and _dhcp server_ are used somewhat interchangeable.  This utility was originally written for dd-wrt, which runs on routers.  Newer versions support pfSense as a dhcp server.  
 
+` `
+## Notable changes since prior release
+V1.1 to V1.4
+- Updated for funcs3 V1.0:  Log file now specified in the config file (LogFile), and LoggingLevel renamed to LogLevel.
+- Added --print-log switch
+- Set --list-db as default if no other operations
+- Incorporated scrape_pfsense_dhcp and eliminated the module
+
+
+` `
 ## Usage
 ```
 $ ./routermonitor -h
 usage: routermonitor [-h] [--update] [--list-db] [--list-dhcp-server]
                      [--sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}]
-                     [--dd-wrt] [--create-db] [--add-note ADD_NOTE] [--delete]
-                     [--MAC MAC] [--config-file CONFIG_FILE]
-                     [--log-file LOG_FILE] [--service] [--version]
+                     [--print-log] [--dd-wrt] [--create-db]
+                     [--add-note ADD_NOTE] [--delete] [--MAC MAC]
+                     [--config-file CONFIG_FILE] [--service] [--version]
                      [SearchTerm]
 
 Monitor for new devices/clients on the network.
@@ -29,7 +39,7 @@ Monitor for new devices/clients on the network.
 The network dhcp server is queried for currently known DHCP clients.
 Any new clients are identified and a notification is sent.  
 See the README.md for setup requirements.
-V1.0 211107
+V1.4 220915
 
 positional arguments:
   SearchTerm            Print database records containing this text.
@@ -42,6 +52,7 @@ optional arguments:
                         Print known clients on the network from the dhcp server.
   --sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}, -s {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}
                         Sort --list-db and --list-dhcp-server output (Default 'MAC').
+  --print-log, -p       Print the tail end of the log file (last 40 lines).
   --dd-wrt              Run in dd-wrt mode (default pfSense mode).
   --create-db           Create a fresh database and populate it with the current dhcp server clients.
   --add-note ADD_NOTE, -a ADD_NOTE
@@ -50,14 +61,18 @@ optional arguments:
   --MAC MAC, -M MAC     MAC address for --add-note or --delete.
   --config-file CONFIG_FILE
                         Path to the config file (Default </mnt/share/dev/python/routermonitor/routermonitor.cfg)>.
-  --log-file LOG_FILE   Path to log file (Default </mnt/share/dev/python/routermonitor/log_routermonitor.txt>).
   --service             Run updates in an endless loop for use as a systemd service.
   --version, -V         Return version number and exit.
+
 ```
 
+` `
 ## Example output
 ```
 $ routermonitor --list-db
+$ ./routermonitor
+ WARNING:  ========== routermonitor (V1.4 220915) ==========
+    INFO:  Config file </path/to/routermonitor.cfg>
 Hostname                   First seen                Current IP     IP Expiry                 MAC                MAC Org Unique ID               Notes
 Denon-AVR-X1600H           Fri May 22 18:23:30 2020  192.168.1.112  Sun May 24 10:42:07 2020  00:05:cd:8a:ab:8d  Denon, Ltd.                     -
 Galaxy-S10-jen             Fri May 22 18:23:33 2020  192.168.1.114  Fri May 22 18:33:29 2020  10:98:c3:80:cd:b2  Murata Manufacturing Co., Ltd.  -
@@ -73,28 +88,34 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 ...
   <23>  known clients.
 ```
+
+` `
 ## Setup and Usage notes
 - Supported on Python3 only.  Developed on Centos 7.8 with Python 3.6.8+, and pfSense+ 21.05.2-RELEASE (Community Edition ~V2.5).  This tool _may_ work on Windows - not tested or supported.
 - Install the Python `mysql-connector`, `requests`, and `lxml` libraries (if using a pfSense dhcp server).
 - If using a dd-wrt router, set up SSH access from your host machine to your router: Enable SSH access on your router, generate a local key (ssh-keygen), and add the content of the `~/.ssh/id_rsa.pub` file into the dd-wrt GUI ssh access config.
-- Place the repo files in a directory of your choice.  `scrape_pfsense_dhcp_leases_V1.py` is only needed if using pfSense.
+- Place the repo files in a directory of your choice.
 - Edit/enter the config info in the `routermonitor.cfg` file.
 - Create credential files in your home directory with only your access (`chown 600 ~/cred_routermonitor`), defining `DB_USER`, `DB_PASS`, `PF_USER`, and `PF_PASS` (if using pfSense).  SMTP credentials `EmailUser` and `EmailPass` may be included in the cred_routermonitor file or a separate file.  
 - Set up a mysql/mariadb login and create a database `router` with access permissions, per your `DB_*` settings in the credentials file.
 - On first run the database will be populated.
 - Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
-- `./routermonitor --list-db` provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI (default sort by MAC address).
+- `./routermonitor --list-db` (equivalent to just `./routermonitor`) provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI (default sort by MAC address).
 - `./routermonitor --list-dhcp-server` provides a list of the currently known DHCP clients on the server.  `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the server).
-- `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field - two in the above example output. `./log_routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
-- `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see routermonitor.cfg).  Any changes in IP or IP Expiry time are logged to log_routermonitor.txt at the INFO level.  See `LoggingLevel` in routermonitor.cfg.
+- `./routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field (two in the above example output) while `./routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
+- `./routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see routermonitor.cfg).  Any changes in IP or IP Expiry time are logged to log_routermonitor.txt at the INFO level.  See `LogLevel` in routermonitor.cfg.
 - Set up a CRON job to run `routermonitor --update` periodically, such as hourly.
 - Alternately, install routermonitor as a systemd service, which periodically does updates.  An example `routermonitor.service` file is provided.  Control the update interval in your routermonitor.cfg file.  
 
-
+` `
 ## Known issues:
 - None
 
+` `
 ## Version history
+- 220915 V1.4   Added snd_notif exception catch
+- 220217 V1.3   Updated for funcs3 V1.0
+- 211114 V1.2   Added --print-log, set --list-db as default if no other operations, incorporated scrape_pfsense_dhcp and eliminated the module.
 - 211108 V1.1   Increased MACOUI and notes column widths to 255 in the db.  Added optional MACOUI_field_width to the config file (default 30).
 - 211107 V1.0   Added support for pfSense (now the default mode)
 - 210523 V0.7   New device message tweaks, Requires funcs3 V0.7 min for import of credentials file and config reload.
