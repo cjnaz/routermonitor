@@ -6,13 +6,16 @@ Any new clients are identified and a notification is sent.
 See the README.md for setup requirements.
 """
 
-__version__ = "V1.1 211108"
+__version__ = "V1.4 220915"
 
 
 #==========================================================
 #
 #  Chris Nelson, 2020 - 2021
 #
+# 220915 V1.4   Added snd_notif exception catch
+# 220217 V1.3   Updated for funcs3 V1.0
+# 211114 V1.2   Added --print-log, set --list-db as default if no other operations, incorporated scrape_pfsense_dhcp and eliminated the module.
 # 211108 V1.1   Increased MACOUI and notes column widths to 255 in the db.  Added optional MACOUI_field_width to the config file (default 30).
 # 211107 V1.0   Added support for pfSense (now the default mode)
 # 210523 V0.7   New device message tweaks, Requires funcs3 V0.7 min for import of credentials file and config reload.
@@ -40,22 +43,22 @@ import os.path
 import collections
 import mysql.connector
 import requests
-# import scrape_pfsense_dhcp_leases as pf     # Conditionally imported at end of this file
+import signal
+from lxml import html
 
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../funcs3/'))    # funcs3 in peer dir
-from funcs3 import setuplogging, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version, cfg
+from funcs3 import PROGDIR, logging, loadconfig, getcfg, snd_notif, funcs3_min_version_check, funcs3_version
 
 # Configs / Constants
-FUNCS3_MIN_VERSION = 0.7
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'routermonitor.cfg')
-LOG_FILE =    os.path.join(os.path.dirname(os.path.realpath(__file__)), "log_routermonitor.txt")
+FUNCS3_MIN_VERSION = 1.0
+CONFIG_FILE = os.path.join(PROGDIR, 'routermonitor.cfg')
+CONSOLE_LOGGING_FORMAT = '{levelname:>8}:  {message}'
 
 
 py_version = float(sys.version_info.major) + float(sys.version_info.minor)/10
 
 
 def main():
-    loadconfig  (cfgfile= args.config_file)
 
     # Check for database access and populate if non-existing
     db_connection = mysql.connector.connect(host=getcfg("DB_HOST"), user=getcfg("DB_USER"), passwd=getcfg("DB_PASS"))
@@ -176,6 +179,15 @@ def main():
         sys.exit()
 
 
+    # Print the tail end of the log file
+    if args.print_log:
+        _fp = getcfg("LogFile")
+        if not os.path.isabs(_fp):
+            _fp = os.path.join(PROGDIR, _fp)
+        subprocess.run(["tail", "-40", _fp]) # getcfg("LogFile")])
+        sys.exit()
+
+
     # Add a note for a client to the database
     if args.add_note is not None:
         if args.MAC is None:
@@ -209,32 +221,39 @@ def main():
 
     # Update database from dhcp server
     def do_update():
-        dhcp_clients = get_dhcp_clients()
-        database_clients = get_database_clients()
-        for MAC in dhcp_clients:
-            if MAC not in database_clients:
-                msg = f"\n  Hostname:    {dhcp_clients[MAC]['hostname']}\
-                        \n  IP address:  {dhcp_clients[MAC]['IP']}\
-                        \n  MAC:         {MAC}\
-                        \n  MACOUI:      {lookup_MAC(MAC)}"
-                snd_notif (subj="New LAN client found", msg=msg, log=True)
-                db_add_client (MAC, dhcp_clients[MAC])
-                continue
-            if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {dhcp_clients[MAC]['hostname']}")
-                logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
-            if dhcp_clients[MAC]['IP'] != database_clients[MAC]['IP']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:       {dhcp_clients[MAC]['IP']}")
-                logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{dhcp_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
-            if dhcp_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
-                expiry = datetime.datetime.fromtimestamp(dhcp_clients[MAC]['expiry'])
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
-                logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{dhcp_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
+        try:
+            dhcp_clients = get_dhcp_clients()
+            database_clients = get_database_clients()
+            for MAC in dhcp_clients:
+                if MAC not in database_clients:
+                    subject = "New LAN client found"
+                    msg = f"\n  Hostname:    {dhcp_clients[MAC]['hostname']}\
+                            \n  IP address:  {dhcp_clients[MAC]['IP']}\
+                            \n  MAC:         {MAC}\
+                            \n  MACOUI:      {lookup_MAC(MAC)}"
+                    try:
+                        snd_notif (subj=subject, msg=msg, log=True)
+                    except Exception as e:
+                        logging.warning(f"snd_notif error for <{subject}>:  {e}")
+                    db_add_client (MAC, dhcp_clients[MAC])
+                    continue
+                if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
+                    msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {dhcp_clients[MAC]['hostname']}")
+                    logging.info(msg)
+                    db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
+                if dhcp_clients[MAC]['IP'] != database_clients[MAC]['IP']:
+                    msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:       {dhcp_clients[MAC]['IP']}")
+                    logging.info(msg)
+                    db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{dhcp_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
+                if dhcp_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
+                    expiry = datetime.datetime.fromtimestamp(dhcp_clients[MAC]['expiry'])
+                    msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
+                    logging.info(msg)
+                    db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{dhcp_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
-        db_connection.commit()
+            db_connection.commit()
+        except Exception as e:
+            logging.warning(f"Failed in do_update:\n{e}")
 
     if args.update:
         do_update()
@@ -243,9 +262,8 @@ def main():
 
     # Service mode
     if args.service:
-        logging.warning(f"{__file__} {__version__}")
         while 1:
-            loadconfig  (cfgfile= args.config_file, flush_on_reload = True, cfgloglevel=30)      # Reload, allowing on-the-fly LoggingLevel and UpdateInterval changes
+            loadconfig  (cfgfile= args.config_file, flush_on_reload = True, cfgloglevel=30, cfglogfile_wins=logfile_override)
             do_update()
             time.sleep(getcfg("UpdateInterval"))
 
@@ -322,7 +340,8 @@ def get_dhcp_clients(dump=False):
     clients_list = {}
     clients = ""
     if not args.dd_wrt:     # pfSense case
-        pf_clients = pf.scrape_pfsense_dhcp(getcfg("PF_DHCP_URL"), getcfg("PF_USER"), getcfg("PF_PASS"))
+        # pf_clients = pf.scrape_pfsense_dhcp(getcfg("PF_DHCP_URL"), getcfg("PF_USER"), getcfg("PF_PASS"))
+        pf_clients = scrape_pfsense_dhcp(getcfg("PF_DHCP_URL"), getcfg("PF_USER"), getcfg("PF_PASS"))
         for row in pf_clients:
             if row["End"] == "n/a":
                 expiry_timestamp = 0
@@ -395,6 +414,57 @@ def lookup_MAC(MAC):
     return (search_result)
 
 
+def scrape_pfsense_dhcp(url, user, password):
+    """Queries the pfsense (+v2.4) dhcp leases status page and returns a list of dictionaries, one for each table row.
+    The dictionary keys are the column names, such as "Hostname", "IP address", and "MAC address".
+    
+    Adapted from Github pletch/scrape_pfsense_dhcp_leases.py (https://gist.github.com/pletch/037a4a01c95688fff65752379534455f), thank you pletch.
+    """
+    s = requests.session()
+    r = s.get(url,verify = False)
+
+    matchme = 'csrfMagicToken = "(.*)";var'
+    csrf = re.search(matchme,str(r.text))
+    payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : user, 'passwordfld' : password}
+    r = s.post(url,data=payload,verify = False)
+    r = s.get(url,verify = False)
+    tree = html.fromstring(r.content)
+
+    headers = []
+    none_index = 0
+    tr_elements = tree.xpath('//tr')
+    for header in tr_elements[0]:
+        name = header.text
+        if name == None:            # Ensure unique name for each column with no name
+            name = "None" + str(none_index)
+            none_index += 1
+        headers.append(name)
+
+    least_list = []
+    xpath_base = '//body[1]//div[1]//div[2]//div[2]//table[1]//tbody//tr'
+    for row in tree.xpath(xpath_base):
+        row_dict = {}
+        header_index = 0
+        for node in row:
+            item_text = node.text
+            if item_text != None:
+                item_text = item_text.strip()
+            row_dict[headers[header_index]] = item_text
+            header_index += 1
+        least_list.append(row_dict)
+    
+    return(least_list)
+
+
+
+def int_handler(signal, frame):
+    logging.warning(f"Signal {signal} received.  Exiting.")
+    sys.exit(0)
+signal.signal(signal.SIGINT,  int_handler)      # Ctrl-C
+signal.signal(signal.SIGTERM, int_handler)      # kill
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('SearchTerm', nargs='?',
@@ -407,6 +477,8 @@ if __name__ == '__main__':
                         help="Print known clients on the network from the dhcp server.")
     parser.add_argument('--sort-by', '-s', choices=['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes'], default='MAC',
                         help="Sort --list-db and --list-dhcp-server output (Default 'MAC').")
+    parser.add_argument('--print-log', '-p', action='store_true',
+                        help="Print the tail end of the log file (last 40 lines).")
     parser.add_argument('--dd-wrt', action='store_true',
                         help="Run in dd-wrt mode (default pfSense mode).")
     parser.add_argument('--create-db', action='store_true',
@@ -419,8 +491,6 @@ if __name__ == '__main__':
                         help="MAC address for --add-note or --delete.")
     parser.add_argument('--config-file', type=str, default=CONFIG_FILE,
                         help=f"Path to the config file (Default <{CONFIG_FILE})>.")
-    parser.add_argument('--log-file', default=LOG_FILE,
-                        help=f"Path to log file (Default <{LOG_FILE}>).")
     parser.add_argument('--service', action='store_true',
                         help="Run updates in an endless loop for use as a systemd service.")
     # parser.add_argument('--swizzle-db', action='store_true',
@@ -430,23 +500,29 @@ if __name__ == '__main__':
     parser.add_argument('--version', '-V', action='version', version='%(prog)s ' + __version__,
                         help="Return version number and exit.")
 
-    if len(sys.argv)==1:
-        parser.print_help()
-        sys.exit()
 
     args = parser.parse_args()
 
-    if not args.dd_wrt:
-        import scrape_pfsense_dhcp_leases_V1 as pf
-
-    if not args.service:
-        setuplogging(logfile=None)
-    else:
-        setuplogging(logfile=args.log_file)
-
-    if not funcs3_min_version_check(FUNCS3_MIN_VERSION):
-        print(f"ERROR:  funcs3 module must be at least version <V{FUNCS3_MIN_VERSION}>.  Found <{funcs3_version}>.")
+    logfile_override = True  if not args.service  else False
+    try:
+        loadconfig(args.config_file, cfglogfile_wins=logfile_override)
+    except Exception as e:
+        logging.error(f"Failed loading config file <{args.config_file}> - Aborting.\n  {e}")
         sys.exit(1)
+
+    logging.warning (f"========== {os.path.basename(__file__)} ({__version__}) ==========")
+    logging.info (f"Config file <{os.path.abspath(args.config_file)}>")
+
+    # funcs3 min version check
+    if not funcs3_min_version_check(FUNCS3_MIN_VERSION):
+        logging.error(f"funcs3 module must be at least version <V{FUNCS3_MIN_VERSION}>.  Found <{funcs3_version}>.  Aborting.")
+        sys.exit(1)
+    else:
+        logging.debug(f"funcs3 module version <{funcs3_version}> (min required <V{FUNCS3_MIN_VERSION}>)")
+
+
+    if not args.update and not args.list_dhcp_server and not args.print_log and not args.create_db and not args.add_note and not args.delete and not args.service:
+        args.list_db = True
 
     main()
     sys.exit()
