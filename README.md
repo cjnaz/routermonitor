@@ -2,8 +2,8 @@
 
 routermonitor logs/monitors DHCP clients (devices) managed by your dhcp server - either dd-wrt or pfSense.
 I use pfSense as my home dhcp server and 
-find over time that I've accumulated several devices on my network that I cannot readily identify. routermonitor
-watches the DHCP leases and tracks changes in a mysql
+find that over time that I've accumulated several devices on my network that I cannot readily identify. routermonitor
+watches the DHCP leases and tracks changes in a sqlite3
 database.  Any new clients found on the network result in a text message notification.  
 
 - Clients come and go over time, as family members come and visit, and as DHCP leases expire.  The history of 
@@ -16,8 +16,12 @@ Note:  _router_ and _dhcp server_ are used somewhat interchangeable.  This utili
 
 ` `
 ## Notable changes since prior release
-V1.1 to V1.4
-- Updated for funcs3 V1.0:  Log file now specified in the config file (LogFile), and LoggingLevel renamed to LogLevel.
+V1.1 to V2.0
+- Moved from MySQL to sqlite3.  The database file is created in the program directory, unless a full path is specified for DB_DB.
+- Updated for funcs3 V1.1:
+  - Log file now specified in the config file (LogFile)
+  - LoggingLevel renamed to LogLevel
+  - UpdateInterval accepts time units: (s)econds, (m)inutes, (h)ours, (d)ays, (w)eeks
 - Added --print-log switch
 - Set --list-db as default if no other operations
 - Incorporated scrape_pfsense_dhcp and eliminated the module
@@ -29,9 +33,9 @@ V1.1 to V1.4
 $ ./routermonitor -h
 usage: routermonitor [-h] [--update] [--list-db] [--list-dhcp-server]
                      [--sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}]
-                     [--print-log] [--dd-wrt] [--create-db]
-                     [--add-note ADD_NOTE] [--delete] [--MAC MAC]
-                     [--config-file CONFIG_FILE] [--service] [--version]
+                     [--print-log] [--create-db] [--add-note ADD_NOTE]
+                     [--delete] [--MAC MAC] [--config-file CONFIG_FILE]
+                     [--service] [--version]
                      [SearchTerm]
 
 Monitor for new devices/clients on the network.
@@ -39,7 +43,7 @@ Monitor for new devices/clients on the network.
 The network dhcp server is queried for currently known DHCP clients.
 Any new clients are identified and a notification is sent.  
 See the README.md for setup requirements.
-V1.4 220915
+V2.0 221023
 
 positional arguments:
   SearchTerm            Print database records containing this text.
@@ -53,7 +57,6 @@ optional arguments:
   --sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}, -s {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}
                         Sort --list-db and --list-dhcp-server output (Default 'MAC').
   --print-log, -p       Print the tail end of the log file (last 40 lines).
-  --dd-wrt              Run in dd-wrt mode (default pfSense mode).
   --create-db           Create a fresh database and populate it with the current dhcp server clients.
   --add-note ADD_NOTE, -a ADD_NOTE
                         Add a note to the db for the specified --MAC.
@@ -63,7 +66,6 @@ optional arguments:
                         Path to the config file (Default </mnt/share/dev/python/routermonitor/routermonitor.cfg)>.
   --service             Run updates in an endless loop for use as a systemd service.
   --version, -V         Return version number and exit.
-
 ```
 
 ` `
@@ -71,7 +73,7 @@ optional arguments:
 ```
 $ routermonitor --list-db
 $ ./routermonitor
- WARNING:  ========== routermonitor (V1.4 220915) ==========
+ WARNING:  ========== routermonitor (V2.0 221023) ==========
     INFO:  Config file </path/to/routermonitor.cfg>
 Hostname                   First seen                Current IP     IP Expiry                 MAC                MAC Org Unique ID               Notes
 Denon-AVR-X1600H           Fri May 22 18:23:30 2020  192.168.1.112  Sun May 24 10:42:07 2020  00:05:cd:8a:ab:8d  Denon, Ltd.                     -
@@ -92,12 +94,11 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 ` `
 ## Setup and Usage notes
 - Supported on Python3 only.  Developed on Centos 7.8 with Python 3.6.8+, and pfSense+ 21.05.2-RELEASE (Community Edition ~V2.5).  This tool _may_ work on Windows - not tested or supported.
-- Install the Python `mysql-connector`, `requests`, and `lxml` libraries (if using a pfSense dhcp server).
+- Install the Python `requests` and `lxml` libraries (if using a pfSense dhcp server).
 - If using a dd-wrt router, set up SSH access from your host machine to your router: Enable SSH access on your router, generate a local key (ssh-keygen), and add the content of the `~/.ssh/id_rsa.pub` file into the dd-wrt GUI ssh access config.
 - Place the repo files in a directory of your choice.
 - Edit/enter the config info in the `routermonitor.cfg` file.
-- Create credential files in your home directory with only your access (`chown 600 ~/cred_routermonitor`), defining `DB_USER`, `DB_PASS`, `PF_USER`, and `PF_PASS` (if using pfSense).  SMTP credentials `EmailUser` and `EmailPass` may be included in the cred_routermonitor file or a separate file.  
-- Set up a mysql/mariadb login and create a database `router` with access permissions, per your `DB_*` settings in the credentials file.
+- Create SMTP server and routermonitor credential files in your home directory with only your access (eg, `chown 600 ~/cred_routermonitor`).  Example credential files provided.  
 - On first run the database will be populated.
 - Do `./routermonitor --add-note` runs to annotate client info, as desired.  Example: `./routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
 - `./routermonitor --list-db` (equivalent to just `./routermonitor`) provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI (default sort by MAC address).
@@ -113,6 +114,7 @@ FireStick4k                Fri May 22 18:23:44 2020  192.168.1.40   static lease
 
 ` `
 ## Version history
+- 221023 V2.0   Revamped.  Moved from mysql to sqlite3.
 - 220915 V1.4   Added snd_notif exception catch
 - 220217 V1.3   Updated for funcs3 V1.0
 - 211114 V1.2   Added --print-log, set --list-db as default if no other operations, incorporated scrape_pfsense_dhcp and eliminated the module.

@@ -1,0 +1,8 @@
+# SMTP server credentials
+# Place this file in your home directory and secure with owner-only read-write previlege (0x600)
+EmailServer	    smtp.example.net    # No port number attached
+EmailServerPort P587TLS             # Required:  P465, P587, P587TLS, or P25
+EmailUser	    username@example.net
+EmailPass	    your.password
+EmailFrom       your.email.address@example.net
+
