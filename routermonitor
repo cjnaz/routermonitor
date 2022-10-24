@@ -6,14 +6,14 @@ Any new clients are identified and a notification is sent.
 See the README.md for setup requirements.
 """
 
-__version__ = "V2.0 221023"
+__version__ = "V2.0 221024"
 
 
 #==========================================================
 #
 #  Chris Nelson, 2020 - 2022
 #
-# 221023 V2.0   Revamped.  Moved from mysql to sqlite3.
+# 221024 V2.0   Revamped.  Moved from mysql to sqlite3.
 # 220915 V1.4   Added snd_notif exception catch
 # 220217 V1.3   Updated for funcs3 V1.0
 # 211114 V1.2   Added --print-log, set --list-db as default if no other operations, incorporated scrape_pfsense_dhcp and eliminated the module.
@@ -42,7 +42,7 @@ import time
 import datetime
 import os.path
 import collections
-import html
+# import html       # Needed for alternate MACOUI lookup implementation
 import sqlite3
 import requests
 import signal
@@ -58,6 +58,8 @@ CONFIG_FILE = os.path.join(PROGDIR, 'routermonitor.cfg')
 CONSOLE_LOGGING_FORMAT = '{levelname:>8}:  {message}'
 EXIT_GOOD = 0
 EXIT_FAIL = 1
+SORT_MODES = ['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes']
+DEFAULT_SORT_MODE = "hostname"   # If not specified in config file or command line
 
 
 def main():
@@ -86,13 +88,13 @@ def main():
 
 
     # Add a note for a client to the database
-    if args.add_note is not None:
+    if args.note is not None:
         if args.MAC is None:
             logging.error ("Must specify the --MAC when using --add-note")
             cleanup(EXIT_FAIL)
         clients = db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'").fetchall()
         if len(clients) == 1:
-            new_note = args.add_note.replace("'", "''")   # single quotes need to be doubled up in SQL
+            new_note = args.note.replace("'", "''")   # single quotes need to be doubled up in SQL
             clients = get_database_clients()
             logging.info (f"Note added for {args.MAC} / {clients[args.MAC]['hostname']}:  {new_note}")
             db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET notes = '{new_note}' WHERE MAC = '{args.MAC}'")
@@ -306,12 +308,12 @@ def get_database_clients(dump=False, search=None):
             "MACOUI":     row['MACOUI'] }
 
     if dump:
-        if args.sort_by == 'MAC':
+        if sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
-        elif args.sort_by in "first_seen expiry":
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by]))
+        elif sort_by in ["first_seen", "expiry"]:
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
         else:
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
         first=True
         if search == None:
             search = ""
@@ -387,12 +389,12 @@ def get_dhcp_clients(dump=False):
         cleanup(EXIT_FAIL)
 
     if dump:
-        if args.sort_by == 'MAC':
+        if sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
-        elif args.sort_by in "hostname IP":
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by].lower()))
-        elif args.sort_by == "expiry":
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][args.sort_by]))
+        elif sort_by in ["hostname", "IP"]:
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
+        elif sort_by == "expiry":
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
         else:
             logging.error ("For --list-dhcp-server, --sort-by must be one of MAC, hostname, IP, or expiry")
             cleanup(EXIT_FAIL)
@@ -485,17 +487,17 @@ if __name__ == '__main__':
                         help="Print known clients on the network from the database.")
     parser.add_argument('--list-dhcp-server', '-r', action='store_true',
                         help="Print known clients on the network from the dhcp server.")
-    parser.add_argument('--sort-by', '-s', choices=['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes'], default='MAC',
-                        help="Sort --list-db and --list-dhcp-server output (Default 'MAC').")
+    parser.add_argument('--sort-by', '-s', choices=SORT_MODES,
+                        help=f"Sort --list-db and --list-dhcp-server output. Overrides config SortBy. Default <{DEFAULT_SORT_MODE}> if neither specified.")
     parser.add_argument('--print-log', '-p', action='store_true',
                         help="Print the tail end of the log file (last 40 lines).")
     parser.add_argument('--create-db', action='store_true',
                         help="Create a fresh database and populate it with the current dhcp server clients.")
-    parser.add_argument('--add-note', '-a', type=str,
+    parser.add_argument('--note', '-n', type=str,
                         help="Add a note to the db for the specified --MAC.")
     parser.add_argument('--delete', action='store_true',
                         help="Delete from the db the specified --MAC.")
-    parser.add_argument('--MAC', '-M', type=str,
+    parser.add_argument('--MAC', '-m', type=str,
                         help="MAC address for --add-note or --delete.")
     parser.add_argument('--config-file', type=str, default=CONFIG_FILE,
                         help=f"Path to the config file (Default <{CONFIG_FILE})>.")
@@ -517,15 +519,20 @@ if __name__ == '__main__':
     logging.warning (f"========== {os.path.basename(__file__)} ({__version__}) ==========")
     logging.info (f"Config file <{os.path.abspath(args.config_file)}>")
 
-    # funcs3 min version check
     if not funcs3_min_version_check(FUNCS3_MIN_VERSION):
         logging.error(f"funcs3 module must be at least version <V{FUNCS3_MIN_VERSION}>.  Found <{funcs3_version}>.  Aborting.")
         sys.exit(EXIT_FAIL)
     else:
         logging.debug(f"funcs3 module version <{funcs3_version}> (min required <V{FUNCS3_MIN_VERSION}>)")
 
+    sort_by = getcfg("SortBy", DEFAULT_SORT_MODE)
+    if args.sort_by:
+        sort_by = args.sort_by
+    if sort_by not in SORT_MODES:
+        logging.error(f"Invalid SortBy value <{getcfg('SortBy')}> in config file")
+        sys.exit(EXIT_FAIL)
 
-    if not args.update and not args.list_dhcp_server and not args.print_log and not args.create_db and not args.add_note and not args.delete and not args.service:
+    if not args.update and not args.list_dhcp_server and not args.print_log and not args.create_db and not args.note and not args.delete and not args.service:
         args.list_db = True     # If operation/mode not specified then default to list_db
 
     if args.service:
