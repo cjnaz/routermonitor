@@ -1,0 +1,10 @@
+[Unit]
+Description=Monitor for new DHCP devices/clients on the router
+After=network-online.target
+
+[Service]
+ExecStart=/home/me/.local/bin/wanstatus --service
+User=me
+
+[Install]
+WantedBy=multi-user.target

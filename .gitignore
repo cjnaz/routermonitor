@@ -1,0 +1,6 @@
+*devenv*/
+*__pycache__*
+build/
+dist/
+log*.txt
+*.egg-info/

@@ -1,0 +1,5 @@
+# Credentials for routermonitor 3.0
+
+# pfSense DHCP Leases page access params
+PF_USER         username
+PF_PASS         password
