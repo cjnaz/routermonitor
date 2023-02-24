@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "routermonitor"
-version = "3.0"
+version = "3.0.1a1"
 description = "Watch for new devices/clients on the network"
 readme = "README.md"
 requires-python = ">=3.6"       # Centos 7 uses 3.6.8
@@ -29,3 +29,9 @@ routermonitor = "routermonitor.routermonitor:cli"
 [project.urls]
 repository = "https://github.com/cjnaz/routermonitor"
 
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["deployment_files/*"]

@@ -12,7 +12,10 @@ known clients is tracked by MAC address.  Clients may be manually deleted from t
 for each tracked client. 
 - The Organization Unique ID for for each devices' MAC address is looked up and added to the database, often providing enough info to identify strange devices.
 
-Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this documentation.  This utility was originally written for dd-wrt, which runs on routers.  Newer versions support pfSense as a dhcp server.  
+Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this documentation.  This utility was originally written for dd-wrt, which runs on routers.  Newer versions support pfSense as a dhcp server.
+
+**NOTE:**  Due to as-of-yet unsolved problems with Python 3.6 and import_resources, the `--setup-user` and `--setup-site` switches are not working on Py 3.6.  Manually grab the files from the [github](https://github.com/cjnaz/routermonitor) `routermonitor/src/deployment_files directory` and place them in the `~\.config\routermonitor` directory.  These command line switches work correctly on Python 3.7+.
+
 
 <br/>
 
@@ -115,6 +118,7 @@ FireStick4k                2020-05-22 18:23:44  192.168.1.40   static lease     
 ---
 
 ## Version history
+- 3.0.1 230224 - Fixed inclusion of deployment_files
 - 3.0 230215 - Converted to package format, updated to cjnfuncs 2.0
 - 2.0 221023 - Revamped, moved from mysql to sqlite3
 - ...
