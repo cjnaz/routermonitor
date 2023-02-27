@@ -118,7 +118,7 @@ FireStick4k                2020-05-22 18:23:44  192.168.1.40   static lease     
 ---
 
 ## Version history
-- 3.0.1 230226 - Fixed inclusion of deployment_files
+- 3.0.5 230226 - Fixed inclusion of deployment_files
 - 3.0 230215 - Converted to package format, updated to cjnfuncs 2.0
 - 2.0 221023 - Revamped, moved from mysql to sqlite3
 - ...
