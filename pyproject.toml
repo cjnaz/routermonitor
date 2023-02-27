@@ -5,17 +5,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "routermonitor"
-version = "3.0.1a1"
-description = "Watch for new devices/clients on the network"
+version = "3.0.1"
+description = "Watch for new DHCP clients on your LAN"
 readme = "README.md"
 requires-python = ">=3.6"       # Centos 7 uses 3.6.8
 authors = [ {name = "Chris Nelson", email = "github@cjnaz.com"} ]
 license = {file = "LICENSE.txt"}
 dependencies = [
-    "cjnfuncs >= 2.0",
+    'cjnfuncs >= 2.0',
     'importlib-metadata; python_version<"3.8"',
-    "requests",
-    "lxml",
+    'requests',
+    'lxml',
     ]
 classifiers = [                 # https://pypi.org/classifiers/
     "Topic :: System :: Networking :: Monitoring",
