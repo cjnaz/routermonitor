@@ -7,11 +7,7 @@ Any new clients are identified and a notification is sent.
 
 #==========================================================
 #
-#  Chris Nelson, 2020 - 2023
-#
-# 3.0 230215 - Converted to package format, updated to cjnfuncs 2.0
-# ...
-# 0.1 200426 - New
+#  Chris Nelson, 2020 - 2024
 #
 #==========================================================
 
@@ -37,10 +33,16 @@ except:
         import importlib_metadata
         __version__ = importlib_metadata.version(__package__ or __name__)
     except:
-        __version__ = "3.0 X"
+        __version__ = "3.1 X"
 
-# from cjnfuncs.cjnfuncs import set_toolname, setup_logging, logging, config_item, getcfg, mungePath, deploy_files, timevalue, retime, requestlock, releaselock,  snd_notif, snd_email
-from cjnfuncs.cjnfuncs import set_toolname, logging, config_item, getcfg, mungePath, deploy_files, timevalue, snd_notif
+from cjnfuncs.core import logging, set_toolname
+from cjnfuncs.configman import config_item
+from cjnfuncs.timevalue import timevalue
+from cjnfuncs.mungePath import mungePath
+from cjnfuncs.deployfiles import deploy_files
+from cjnfuncs.SMTP import snd_notif
+import cjnfuncs.core as core
+
 
 
 # Configs / Constants
@@ -57,7 +59,7 @@ PY_VERSION          = sys.version_info
 
 def main():
 
-    logging.getLogger().setLevel(20)  # Set INFO level for interactive use
+    logging.getLogger().setLevel(20)  # Set INFO level (20) for interactive use.  Set to 10 for debugging.
     db_connect()
 
     # List known clients from database
@@ -77,12 +79,12 @@ def main():
         if args.MAC is None:
             logging.error ("Must specify the --MAC when using --add-note")
             cleanup(EXIT_FAIL)
-        clients = db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'").fetchall()
+        clients = db_cursor.execute(f"SELECT * FROM {config.getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'").fetchall()
         if len(clients) == 1:
             new_note = args.note.replace("'", "''")   # single quotes need to be doubled up in SQL
             clients = get_database_clients()
             logging.info (f"Note added for {args.MAC} / {clients[args.MAC]['hostname']}:  {new_note}")
-            db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET notes = '{new_note}' WHERE MAC = '{args.MAC}'")
+            db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET notes = '{new_note}' WHERE MAC = '{args.MAC}'")
             db_connection.commit()
             cleanup(EXIT_GOOD)
         elif len(clients) > 1:
@@ -98,11 +100,11 @@ def main():
         if args.MAC is None:
             logging.error ("ERROR - Must specify the --MAC when using --delete")
             cleanup(EXIT_FAIL)
-        clients = db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'").fetchall()
+        clients = db_cursor.execute(f"SELECT * FROM {config.getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'").fetchall()
         if len(clients) == 1:
             clients = get_database_clients()
             logging.info (f"Deleted {args.MAC} / {clients[args.MAC]['hostname']}")
-            db_cursor.execute(f"DELETE FROM {getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
+            db_cursor.execute(f"DELETE FROM {config.getcfg('DB_TABLE')} WHERE MAC = '{args.MAC}'")
             db_connection.commit()
             cleanup(EXIT_GOOD)
         elif len(clients) > 1:
@@ -132,7 +134,7 @@ def service():
 
         if time.time() > next_run:
             do_update()
-            next_run += timevalue(getcfg("UpdateInterval")).seconds
+            next_run += timevalue(config.getcfg("UpdateInterval")).seconds
         time.sleep(5)
 
 
@@ -140,14 +142,14 @@ def db_connect():
     """ Check for database access and populate if not existing """
     global db_connection, db_cursor
 
-    mungePath(tool.data_dir, mkdir=True)    # Force make the data_dir
-    _fp = str(mungePath(getcfg("DB_DB"), tool.data_dir).full_path)
+    mungePath(core.tool.data_dir, mkdir=True)    # Force make the data_dir
+    _fp = str(mungePath(config.getcfg("DB_DB"), core.tool.data_dir).full_path)
     db_connection = sqlite3.connect(_fp)    # _fp must be str on Python 3.6.8
     db_connection.row_factory = sqlite3.Row
     db_cursor = db_connection.cursor()
     found = False
     for row in db_cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall():
-        if getcfg('DB_TABLE') in row['name']:
+        if config.getcfg('DB_TABLE') in row['name']:
             found = True
             break
     
@@ -156,23 +158,29 @@ def db_connect():
     
     if found and args.create_db:
         logging.warning ("Deleted existing network clients database table.")
-        db_cursor.execute(f"DROP TABLE {getcfg('DB_TABLE')}")
+        db_cursor.execute(f"DROP TABLE {config.getcfg('DB_TABLE')}")
         db_connection.commit()
     
     db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(255)"
     if not found or args.create_db:
         logging.warning ("Creating network clients database table:")
-        dhcp_clients = get_dhcp_clients()
-        db_cursor.execute(f"CREATE TABLE {getcfg('DB_TABLE')} ({db_fields})")
+        try:
+            dhcp_clients = get_dhcp_clients()
+        # if status:
+            db_cursor.execute(f"CREATE TABLE {config.getcfg('DB_TABLE')} ({db_fields})")
 
-        count = 0
-        for MAC in dhcp_clients:
-            count += 1
-            macoui = db_add_client (MAC, dhcp_clients[MAC])
-            logging.info (f"  {dhcp_clients[MAC]['hostname']:25}  {dhcp_clients[MAC]['IP']:15}  {MAC}   {macoui}")
-        db_connection.commit()
-        logging.info  (f"Database table created with  <{count}>  clients.")
-        cleanup(EXIT_GOOD)
+            count = 0
+            for MAC in dhcp_clients:
+                count += 1
+                macoui = db_add_client (MAC, dhcp_clients[MAC])
+                logging.info (f"  {dhcp_clients[MAC]['hostname']:25}  {dhcp_clients[MAC]['IP']:15}  {MAC}   {macoui}")
+            db_connection.commit()
+            logging.info  (f"Database table created with  <{count}>  clients.")
+            cleanup(EXIT_GOOD)
+        except Exception as e:
+            logging.error  (f"Database table creation failed:\n  {e}")
+            cleanup(EXIT_FAIL)
+
 
 
 def do_update():
@@ -190,27 +198,29 @@ def do_update():
                         \n  MAC:         {MAC}\
                         \n  MACOUI:      {macoui}"
                 try:
-                    snd_notif (subj=subject, msg=msg, log=True)
+                    snd_notif (subj=subject, msg=msg, log=True, smtp_config=config)
+                    # logging.warning(f"{subject}:{msg}")
                 except Exception as e:
-                    logging.warning(f"snd_notif error for <{subject}>:  {e}")
+                    # logging.warning(f"snd_notif error for <{subject}>:  {e}")
+                    logging.warning(e)
                 continue
             if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
                 msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {dhcp_clients[MAC]['hostname']}")
                 logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
+                db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
             if dhcp_clients[MAC]['IP'] != database_clients[MAC]['IP']:
                 msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:       {dhcp_clients[MAC]['IP']}")
                 logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET IP = \'{dhcp_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
+                db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET IP = \'{dhcp_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
             if dhcp_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
                 expiry = datetime.datetime.fromtimestamp(dhcp_clients[MAC]['expiry'])
                 msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
                 logging.info(msg)
-                db_cursor.execute(f"UPDATE {getcfg('DB_TABLE')} SET expiry = \'{dhcp_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
+                db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET expiry = \'{dhcp_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
         db_connection.commit()
     except Exception as e:
-        logging.warning(f"Failed in do_update:\n{e}")
+        logging.warning(f"{type(e).__name__}:\n  {e}")
 
 
 def db_add_client(MAC, record):
@@ -219,7 +229,7 @@ def db_add_client(MAC, record):
     """
     macoui = lookup_MAC(MAC)
     cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
-        getcfg('DB_TABLE'),
+        config.getcfg('DB_TABLE'),
         MAC,
         macoui,
         record['hostname'],
@@ -235,17 +245,26 @@ next_lookup = time.time()
 def lookup_MAC(MAC):
     """ Given MAC 00:05:cd:8a:22:33, get OUI from https://api.macvendors.com/00:05:cd
     Lookups limited to 2 per seconds without a macvendors.com account
+    
+    macvendors.com returns:
+      200:  found macoui
+      404:  No macoui found (potentially overlaps with general webpage problem)
+      429:  "detail":"Too Many Requests","message":"Please slow down your requests or upgrade your plan at https://macvendors.com"
     """
+
     global next_lookup
-    while 1:
-        if time.time() > next_lookup:
-            break
-    macoui = "--none--"
-    r = requests.get("https://api.macvendors.com/" + MAC[0:8])
-    if r.status_code == 200:
-        macoui = r.text
-    next_lookup = time.time() + 0.6
-    return macoui
+
+    for _ in range(3):
+        while 1:
+            if time.time() > next_lookup:
+                break
+        r = requests.get("https://api.macvendors.com/" + MAC[0:8])
+        next_lookup = time.time() + 0.6
+
+        logging.debug (f"r.status_code: {r.status_code}, r.text: {r.text}")
+        if r.status_code == 200:
+            return r.text
+    return "--none--"
 
     # Remnant implementation using https://oidsearch.s.dd-wrt.com
     # # Given MAC 00:05:cd:8a:22:33, web page returns
@@ -284,7 +303,7 @@ def get_database_clients(dump=False, search=None):
     global sort_by
 
     clients_list = {}
-    for row in db_cursor.execute(f"SELECT * FROM {getcfg('DB_TABLE')}").fetchall():
+    for row in db_cursor.execute(f"SELECT * FROM {config.getcfg('DB_TABLE')}").fetchall():
         clients_list[row['MAC']] = {
             "hostname":   row['hostname'],
             "IP":         row['IP'],
@@ -324,42 +343,50 @@ def get_database_clients(dump=False, search=None):
                 count += 1
                 if first:
                     print(f"{'Hostname':<25}  {'First seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'MAC':<17}  "
-                        + f"{'MAC Org Unique ID':<{getcfg('MACOUI_field_width', 30)}}  {'Notes'}")                    
+                        + f"{'MAC Org Unique ID':<{config.getcfg('MACOUI_field_width', 30)}}  {'Notes'}")                    
                     first = False
-                _macoui = clients_list[MAC]['MACOUI'][:getcfg('MACOUI_field_width', 30)]
+                _macoui = clients_list[MAC]['MACOUI'][:config.getcfg('MACOUI_field_width', 30)]
                 print(f"{clients_list[MAC]['hostname']:<25}  {first_seen:<19}  {clients_list[MAC]['IP']:<15}  {expiry:<19}  {MAC:<17}  "
-                    + f"{_macoui:<{getcfg('MACOUI_field_width', 30)}}  {clients_list[MAC]['notes']}")
+                    + f"{_macoui:<{config.getcfg('MACOUI_field_width', 30)}}  {clients_list[MAC]['notes']}")
         print (f"  <{count}>  known clients.")
 
     return clients_list
 
 
 def get_dhcp_clients(dump=False):
-    """ Get leases from the dhcp server, return a sorted dictionary of dictionaries, keyed by MAC
+    """ Get leases from the dhcp server, return a tuple of (status, sorted dictionary of dictionaries keyed by MAC)
         {
             MAC:  { hostname:, IP:, expiry: }
         }
     """
     clients_list = {}
     clients = ""
-    if getcfg("DHCP_SERVER_TYPE").lower() == "pfsense":
-        pf_clients = scrape_pfsense_dhcp(getcfg("PF_DHCP_URL"), getcfg("PF_USER"), getcfg("PF_PASS"))
+    if config.getcfg("DHCP_SERVER_TYPE").lower() == "pfsense":
+        try:
+            pf_clients = scrape_pfsense_dhcp(config.getcfg("PF_DHCP_URL"), config.getcfg("PF_USER"), config.getcfg("PF_PASS"))
+        except Exception as e:
+            logging.warning(f"{type(e).__name__}:\n  {e}")
+            raise
         for row in pf_clients:
             if row["End"] == "n/a":
                 expiry_timestamp = 0
             else:
-                expiry_timestamp = datetime.datetime.strptime(row["End"], getcfg("PF_DATE_FORMAT")).timestamp()    # '2021/11/07 11:51:44'
-            clients_list[row["MAC address"]] = {"hostname":row["Hostname"], "IP":row["IP address"], "expiry":expiry_timestamp}
+                expiry_timestamp = datetime.datetime.strptime(row["End"], config.getcfg("PF_DATE_FORMAT")).timestamp()    # '2021/11/07 11:51:44'
+            # pfsense+ version 23.09-RELEASE changed the case on table headers for the DHCP leases list
+            # clients_list[row["MAC address"]] = {"hostname":row["Hostname"], "IP":row["IP address"], "expiry":expiry_timestamp}
+            clients_list[row["MAC Address"]] = {"hostname":row["Hostname"], "IP":row["IP Address"], "expiry":expiry_timestamp}
     
-    elif getcfg("DHCP_SERVER_TYPE").lower() == "dd-wrt":
+    elif config.getcfg("DHCP_SERVER_TYPE").lower() == "dd-wrt":
         try:
-            _cmd = ["ssh", "root@" + getcfg("DDWRT_IP"), "-o", "ConnectTimeout=1", "-T", "cat", getcfg("DDWRT_DHCP")]
+            _cmd = ["ssh", "root@" + config.getcfg("DDWRT_IP"), "-o", "ConnectTimeout=1", "-T", "cat", config.getcfg("DDWRT_DHCP")]
             if PY_VERSION >= (3, 7): #3.7:
                 clients = subprocess.run(_cmd, capture_output=True, text=True).stdout.split("\n")
             else:   #Py 3.6 .run does not support capture_output, so use the old method.
                 clients = subprocess.run(_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True).stdout.split("\n")
         except Exception as e:
-            logging.warning("Exception <{}>".format(e))
+            logging.warning(f"Exception:\n  {e}")
+            return False, ""
+            # logging.warning("Exception <{}>".format(e))
         # 1587457675 00:0d:c5:5c:82:6d 192.168.1.105 Hopper-ETH0 01:00:0d:c5:5c:82:6d
         line_re = re.compile(r"([\d]+) ([\dabcdef:]+) ([\d.]+) ([\S]+)") # [\dabcdef:]+")
         for line in clients:
@@ -370,7 +397,7 @@ def get_dhcp_clients(dump=False):
                 if len(line) > 0:
                     logging.warning ("ERROR in get_dhcp_clients:  This line looks bogus:\n  ", line)
     else:
-        logging.error (f"Invalid DHCP_SERVER_TYPE in config: {getcfg('DHCP_SERVER_TYPE')}")
+        logging.error (f"Invalid DHCP_SERVER_TYPE in config: {config.getcfg('DHCP_SERVER_TYPE')}")
         cleanup(EXIT_FAIL)
 
     if dump:
@@ -407,41 +434,49 @@ def scrape_pfsense_dhcp(url, user, password):
     s = requests.session()
     try:
         r = s.get(url,verify = False)
-    except:
-        logging.error(f"Error attempting to connect to <{url}>.  url and login credentials valid?")
-        sys.exit(EXIT_FAIL)
+    # except:
+    #     logging.error(f"Error attempting to connect to <{url}>.  url and login credentials valid?")
+    #     raise IOError("Could not read DHCP clients from the pfsense router")
+    #     # sys.exit(EXIT_FAIL)
 
-    matchme = 'csrfMagicToken = "(.*)";var'
-    csrf = re.search(matchme,str(r.text))
-    payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : user, 'passwordfld' : password}
-    r = s.post(url,data=payload,verify = False)
-    r = s.get(url,verify = False)
-    tree = _html.fromstring(r.content)
+    # try:
+        matchme = 'csrfMagicToken = "(.*)";var'
+        csrf = re.search(matchme,str(r.text))
+        payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : user, 'passwordfld' : password}
+        r = s.post(url,data=payload,verify = False)
+        r = s.get(url,verify = False)
+        tree = _html.fromstring(r.content)
 
-    headers = []
-    none_index = 0
-    tr_elements = tree.xpath('//tr')
-    for header in tr_elements[0]:
-        name = header.text
-        if name == None:            # Ensure unique name for each column with no name
-            name = "None" + str(none_index)
-            none_index += 1
-        headers.append(name)
+        headers = []
+        none_index = 0
+        tr_elements = tree.xpath('//tr')
+        for header in tr_elements[0]:
+            name = header.text
+            if name == None:            # Ensure unique name for each column with no name
+                name = "None" + str(none_index)
+                none_index += 1
+            headers.append(name)
 
-    least_list = []
-    xpath_base = '//body[1]//div[1]//div[2]//div[2]//table[1]//tbody//tr'
-    for row in tree.xpath(xpath_base):
-        row_dict = {}
-        header_index = 0
-        for node in row:
-            item_text = node.text
-            if item_text != None:
-                item_text = item_text.strip()
-            row_dict[headers[header_index]] = item_text
-            header_index += 1
-        least_list.append(row_dict)
-    
-    return(least_list)
+        least_list = []
+        # //div[2] >> //div[3] due to added ISCDHCP EOL note at top
+        # xpath_base = '//body[1]//div[1]//div[2]//div[2]//table[1]//tbody//tr'
+        # TODO Index down to the 'Leases' table, rather than hard coded xpath_base
+        xpath_base = '//body[1]//div[1]//div[3]//div[2]//table[1]//tbody//tr'
+        for row in tree.xpath(xpath_base):
+            row_dict = {}
+            header_index = 0
+            for node in row:
+                item_text = node.text
+                if item_text != None:
+                    item_text = item_text.strip()
+                row_dict[headers[header_index]] = item_text
+                header_index += 1
+            least_list.append(row_dict)
+        
+        return(least_list)
+    except Exception as e:
+        logging.error(f"{type(e).__name__} when attempting to connect to or get DHCP data from <{url}>.\n  {e}")
+        raise ConnectionError("pfsense router access error")
 
 
 def cleanup(exit_code):
@@ -464,10 +499,10 @@ signal.signal(signal.SIGTERM, int_handler)      # kill
 
 
 def cli():
-    global tool, config, args, logfile_override
+    global config, args, logfile_override
     global sort_by
 
-    tool = set_toolname (TOOLNAME)
+    set_toolname (TOOLNAME)
     parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('SearchTerm', nargs='?',
                         help="Print database records containing this text.")
@@ -497,7 +532,7 @@ def cli():
                         help=f"Install starter files in user space.")
     parser.add_argument('--setup-site', action='store_true',
                         help=f"Install starter files in system-wide space. Run with root prev.")
-    parser.add_argument('-V', '--version', action='version', version=f"{tool.toolname} {__version__}",
+    parser.add_argument('-V', '--version', action='version', version=f"{core.tool.toolname} {__version__}",
                         help="Return version number and exit.")
     args = parser.parse_args()
 
@@ -533,16 +568,16 @@ def cli():
         sys.exit(EXIT_FAIL)
 
 
-    logging.warning (f"========== {tool.toolname} ({__version__}) ==========")
+    logging.warning (f"========== {core.tool.toolname} ({__version__}) ==========")
     logging.warning (f"Config file <{config.config_full_path}>")
 
 
     # Print log
     if args.print_log:
         try:
-            _lf = mungePath(getcfg("LogFile"), tool.log_dir_base).full_path
+            _lf = mungePath(config.getcfg("LogFile"), core.tool.log_dir_base).full_path
             print (f"Tail of  <{_lf}>:")
-            _xx = collections.deque(_lf.open(), getcfg("PrintLogLength", PRINTLOGLENGTH))
+            _xx = collections.deque(_lf.open(), config.getcfg("PrintLogLength", PRINTLOGLENGTH))
             for line in _xx:
                 print (line, end="")
         except Exception as e:
@@ -550,11 +585,11 @@ def cli():
         sys.exit()
 
 
-    sort_by = getcfg("SortBy", DEFAULT_SORT_MODE)
+    sort_by = config.getcfg("SortBy", DEFAULT_SORT_MODE)
     if args.sort_by:
         sort_by = args.sort_by
     if sort_by not in SORT_MODES:
-        logging.error(f"Invalid SortBy value <{getcfg('SortBy')}> in config file")
+        logging.error(f"Invalid SortBy value <{config.getcfg('SortBy')}> in config file")
         sys.exit(EXIT_FAIL)
 
     if not args.update and not args.list_dhcp_server and not args.print_log and not args.create_db and not args.note and not args.delete and not args.service:
@@ -563,7 +598,7 @@ def cli():
     if args.service:
         service()
 
-    sys.exit(main())
+    main()
 
 
 if __name__ == '__main__':

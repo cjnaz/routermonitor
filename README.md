@@ -12,7 +12,7 @@ known clients is tracked by MAC address.  Clients may be manually deleted from t
 for each tracked client. 
 - The Organization Unique ID for for each devices' MAC address is looked up and added to the database, often providing enough info to identify strange devices.
 
-Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this documentation.  This utility was originally written for dd-wrt, which runs on routers.  Newer versions support pfSense as a dhcp server.
+Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this documentation.  This utility was originally written for dd-wrt, which runs on routers.  Newer versions also support pfSense as a dhcp server.
 
 **NOTE:**  Due to as-of-yet unsolved problems with Python 3.6 and import_resources, the `--setup-user` and `--setup-site` switches are not working on Py 3.6.  Manually grab the files from the [github](https://github.com/cjnaz/routermonitor) `src/deployment_files directory` and place them in the `~\.config\routermonitor` directory.  These command line switches work correctly on Python 3.7+.
 
@@ -22,7 +22,11 @@ Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this docu
 ---
 
 ## Notable changes since prior release
-3.0 - Converted to package format, updated to cjnfuncs 2.0
+V3.1:
+ - NOTE:  This version supports pfsense+ 23.09-RELEASE using ONLY the ISC DHCP server.  This version puts up a ISC DHCP EOL warning message on the DHCP Leases page, which shifts the table parsing.  Since the new KEA DHCP server does not yet play nicely with the DNS Resolver, I'm currently staying with the ISC DHCP server.
+ - Adjusted for cjnfuncs V2.1 (module partitioning). SMTP params must be in the [SMTP] config file section.
+ - Fixed service mode exit when pfsense router is not accessible.
+ - Added retries to lookup_MAC().
 
 <br/>
 
@@ -31,10 +35,8 @@ Note:  _router_ and _dhcp server_ are used somewhat interchangeable in this docu
 ## Usage
 ```
 $ routermonitor -h
-usage: routermonitor [-h] [--update] [--list-db] [--list-dhcp-server]
-                     [--sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}]
-                     [--create-db] [--note NOTE] [--delete] [--MAC MAC]
-                     [--config-file CONFIG_FILE] [--print-log] [--service]
+usage: routermonitor [-h] [--update] [--list-db] [--list-dhcp-server] [--sort-by {hostname,IP,first_seen,expiry,MAC,MACOUI,notes}]
+                     [--create-db] [--note NOTE] [--delete] [--MAC MAC] [--config-file CONFIG_FILE] [--print-log] [--service]
                      [--setup-user] [--setup-site] [-V]
                      [SearchTerm]
 
@@ -42,12 +44,12 @@ Monitor for new devices/clients on the network.
 
 The network dhcp server is queried for currently known DHCP clients.
 Any new clients are identified and a notification is sent.  
-3.0
+3.1
 
 positional arguments:
   SearchTerm            Print database records containing this text.
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   --update, -u          Check the dhcp server for new connections and update the database.
   --list-db, -l         Print known clients on the network from the database (default mode).
@@ -76,7 +78,7 @@ optional arguments:
 ```
 $ routermonitor --list-db
 $ ./routermonitor
- WARNING:  ========== routermonitor (3.0) ==========
+ WARNING:  ========== routermonitor (3.1) ==========
     INFO:  Config file </path/to/routermonitor.cfg>
 Hostname                   First seen           Current IP     IP Expiry            MAC                MAC Org Unique ID               Notes
 Denon-AVR-X1600H           2020-05-22 18:23:30  192.168.1.112  2020-05-24 10:42:07  00:05:cd:8a:ab:8d  Denon, Ltd.                     -
@@ -105,8 +107,8 @@ FireStick4k                2020-05-22 18:23:44  192.168.1.40   static lease     
   - If using a dd-wrt router, set up SSH access from your host machine to your router: Enable SSH access on your router, generate a local key (ssh-keygen), and add the content of the `~/.ssh/id_rsa.pub` file into the dd-wrt GUI ssh access config.
 - Run `routermonitor` manually to build the devices/clients database.
 - Do `routermonitor --add-note` runs to annotate client info, as desired.  Example: `routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartsocket"`.
-- `routermonitor --list-db` (equivalent to just `routermonitor`) provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI (default `SortBy` may be set in the config file).
-- `routermonitor --list-dhcp-server` provides a list of the currently known DHCP clients on the server. `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the server).
+- `routermonitor --list-db` (equivalent to just `routermonitor`) provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by MAC, hostname, IP, first_seen, expiry, notes, or MACOUI.  The default `SortBy` may be set in the config file.
+- `routermonitor --list-dhcp-server` provides a list of the currently known DHCP clients on the server. `--sort-by` is supported with fields MAC, hostname, IP, and expiry (MACOUI is not reported by the DHCP server).
 - `routermonitor amaz` provides a list of all clients in the database that have the string 'amaz' in any field (two in the above example output) while `routermonitor .2.` lists all clients on my Guest WiFi (192.168.2.*, three in the above example output).
 - `routermonitor --update` finds any new clients on the network, adds them to the database, and sends a text message notification (see routermonitor.cfg).  Any changes in IP address or IP Expiry time are logged to log_routermonitor.txt at the INFO level.  See `LogLevel` in routermonitor.cfg.
 - Optionally set up the routermonitor systemd service. A template .service file is provided in the config directory.
@@ -118,6 +120,14 @@ FireStick4k                2020-05-22 18:23:44  192.168.1.40   static lease     
 ---
 
 ## Version history
+- 3.1 240106 - Fixed service mode exit when pfsense router is not accessible.  Added retries to lookup_MAC().
+  - Adjusted for cjnfuncs V2.1 (module partitioning).
+  - Fixed service mode exit when pfsense router is not accessible.
+  - Added retries to lookup_MAC().
+  - Adjusted pfsense DHCP Leases table parsing (case changes in header) in 23.09-RELEASE.
+  - Adjusted pfsense DHCP Leases table parsing for ISC DHCP EOL header warning.
+
+
 - 3.0.5 230226 - Fixed inclusion of deployment_files
 - 3.0 230215 - Converted to package format, updated to cjnfuncs 2.0
 - 2.0 221023 - Revamped, moved from mysql to sqlite3
