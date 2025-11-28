@@ -1,7 +1,7 @@
 [project]
 name = 'routermonitor'
-version = '4.0'
-    # 4.0 - pfSense+ Nexus MIM contoller API
+version = '4.0b1'
+    # 4.0b1 - pfSense+ Nexus MIM contoller API, pfSense_pagescrape, pfSense_unofficialV2 modes functional
     # 3.1.1 - pyproject.toml tuning
 description = 'Watch for new DHCP clients on your LAN'
 readme = 'README.md'
