@@ -1,37 +1,40 @@
-[build-system]
-requires = ["setuptools"] #, "setuptools-scm"]
-build-backend = "setuptools.build_meta"
-
-
 [project]
-name = "routermonitor"
-version = "3.1"
-description = "Watch for new DHCP clients on your LAN"
-readme = "README.md"
-requires-python = ">=3.6"       # Centos 7 uses 3.6.8
-authors = [ {name = "Chris Nelson", email = "github@cjnaz.com"} ]
-license = {file = "LICENSE.txt"}
+name = 'routermonitor'
+version = '4.0'
+    # 4.0 - pfSense+ Nexus MIM contoller API
+    # 3.1.1 - pyproject.toml tuning
+description = 'Watch for new DHCP clients on your LAN'
+readme = 'README.md'
+requires-python = '>=3.9'       # RHEL 9 uses py3.9
+authors = [ {name = 'Chris Nelson', email = 'github@cjnaz.com'} ]
+license = 'MIT'
 dependencies = [
-    'cjnfuncs >= 2.0.2',
-    'importlib-metadata; python_version<"3.8"',
+    'cjnfuncs >= 3.0.1',
     'requests',
     'lxml',
     ]
+keywords = ['cjnaz', 'lan', 'router', 'pfsense', 'dd-wrt', 'monitor']
 classifiers = [                 # https://pypi.org/classifiers/
-    "Topic :: System :: Networking :: Monitoring",
+    'Topic :: System :: Networking :: Monitoring',
     ]
 
 
+[build-system]
+requires = ['setuptools']
+build-backend = 'setuptools.build_meta'
+
+
 [project.scripts]
-routermonitor = "routermonitor.routermonitor:cli"
+routermonitor = 'routermonitor.routermonitor:cli'
 
 
 [project.urls]
-repository = "https://github.com/cjnaz/routermonitor"
+repository = 'https://github.com/cjnaz/routermonitor'
 
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ['src']
+
 
 [tool.setuptools.package-data]
-"*" = ["deployment_files/*"]
+'*' = ['deployment_files/*']

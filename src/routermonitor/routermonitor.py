@@ -21,9 +21,30 @@ import os.path
 import collections
 # import html       # Needed for alternate MACOUI lookup implementation
 import sqlite3
+import urllib3
 import requests
 import signal
+import base64
+import json
 from lxml import html as _html
+from pathlib import Path
+
+#
+# Controller APIs
+#
+from pfapi.models import *
+from pfapi.api.login import login, refresh_access_token
+from pfapi.types import Response
+
+from pfapi.api.mim import get_controlled_devices
+from pfapi import Client, AuthenticatedClient
+
+#
+# Per-device api
+#
+# from pfapi.api.system import get_status, get_system_update_info
+# from pfapi.api.aliases import firewall_get_aliases
+from pfapi.api.services import get_dhcp_leases
 
 try:
     import importlib.metadata
@@ -35,7 +56,7 @@ except:
     except:
         __version__ = "3.1 X"
 
-from cjnfuncs.core import logging, set_toolname
+from cjnfuncs.core import logging, set_toolname, set_logging_level
 from cjnfuncs.configman import config_item
 from cjnfuncs.timevalue import timevalue
 from cjnfuncs.mungePath import mungePath
@@ -51,15 +72,24 @@ CONFIG_FILE         = "routermonitor.cfg"
 PRINTLOGLENGTH      = 40
 EXIT_GOOD           = 0
 EXIT_FAIL           = 1
-SORT_MODES          = ['hostname', 'IP', 'first_seen', 'expiry', 'MAC', 'MACOUI', 'notes']
+SORT_MODES          = ['hostname', 'IP', 'first_seen', 'last_seen', 'expiry', 'MAC', 'MACOUI', 'notes']
 DEFAULT_SORT_MODE   = "hostname"   # If not specified in config file or command line
 PY_VERSION          = sys.version_info
 # SYSTEM              = platform.system()     # 'Linux', 'Windows', ...
 
 
+#=====================================================================================
+#=====================================================================================
+#   m a i n
+#=====================================================================================
+#=====================================================================================
+
 def main():
 
-    logging.getLogger().setLevel(20)  # Set INFO level (20) for interactive use.  Set to 10 for debugging.
+    if args.verbose in [1, 2]:
+        set_logging_level (['not possible', logging.INFO, logging.DEBUG][args.verbose], save=False)
+
+    # logging.getLogger().setLevel(20)  # Set INFO level (20) for interactive use.  Set to 10 for debugging.
     db_connect()
 
     # List known clients from database
@@ -124,6 +154,12 @@ def main():
     cleanup(EXIT_FAIL)
 
 
+#=====================================================================================
+#=====================================================================================
+#   s e r v i c e
+#=====================================================================================
+#=====================================================================================
+
 def service():
     db_connect()
     next_run = time.time()
@@ -137,6 +173,12 @@ def service():
             next_run += timevalue(config.getcfg("UpdateInterval")).seconds
         time.sleep(5)
 
+
+#=====================================================================================
+#=====================================================================================
+#   d b _ c o n n e c t
+#=====================================================================================
+#=====================================================================================
 
 def db_connect():
     """ Check for database access and populate if not existing """
@@ -161,7 +203,7 @@ def db_connect():
         db_cursor.execute(f"DROP TABLE {config.getcfg('DB_TABLE')}")
         db_connection.commit()
     
-    db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(255)"
+    db_fields = "MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, last_seen INT, expiry INT, IP VARCHAR(15), MACOUI VARCHAR(255)"
     if not found or args.create_db:
         logging.warning ("Creating network clients database table:")
         try:
@@ -178,10 +220,15 @@ def db_connect():
             logging.info  (f"Database table created with  <{count}>  clients.")
             cleanup(EXIT_GOOD)
         except Exception as e:
-            logging.error  (f"Database table creation failed:\n  {e}")
+            logging.error  (f"Database table creation failed:\n  {type(e).__name__}:  {e}")  # TODO type
             cleanup(EXIT_FAIL)
 
 
+#=====================================================================================
+#=====================================================================================
+#   d o _ u p d a t e
+#=====================================================================================
+#=====================================================================================
 
 def do_update():
     """ Update database from dhcp server
@@ -199,48 +246,65 @@ def do_update():
                         \n  MACOUI:      {macoui}"
                 try:
                     snd_notif (subj=subject, msg=msg, log=True, smtp_config=config)
-                    # logging.warning(f"{subject}:{msg}")
                 except Exception as e:
-                    # logging.warning(f"snd_notif error for <{subject}>:  {e}")
-                    logging.warning(e)
+                    logging.warning(f"snd_notif error for <{subject}>\n  {type(e).__name__}:  {e}")
                 continue
             if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname: {dhcp_clients[MAC]['hostname']}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname:   {dhcp_clients[MAC]['hostname']}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
             if dhcp_clients[MAC]['IP'] != database_clients[MAC]['IP']:
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:       {dhcp_clients[MAC]['IP']}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New IP:         {dhcp_clients[MAC]['IP']}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET IP = \'{dhcp_clients[MAC]['IP']}\' WHERE MAC = '{MAC}'")
+            if dhcp_clients[MAC]['last_seen'] != database_clients[MAC]['last_seen']:
+                last_seen = datetime.datetime.fromtimestamp(dhcp_clients[MAC]['last_seen'])
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New last_seen:  {last_seen}")
+                logging.info(msg)
+                db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET last_seen = \'{dhcp_clients[MAC]['last_seen']}\' WHERE MAC = '{MAC}'")
             if dhcp_clients[MAC]['expiry'] != database_clients[MAC]['expiry']:
                 expiry = datetime.datetime.fromtimestamp(dhcp_clients[MAC]['expiry'])
-                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:   {expiry}")
+                msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New expiry:     {expiry}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {config.getcfg('DB_TABLE')} SET expiry = \'{dhcp_clients[MAC]['expiry']}\' WHERE MAC = '{MAC}'")
 
         db_connection.commit()
     except Exception as e:
-        logging.warning(f"{type(e).__name__}:\n  {e}")
+        logging.warning(f"{type(e).__name__}:\n  {type(e).__name__}:  {e}")
 
+
+#=====================================================================================
+#=====================================================================================
+#   d o _ a d d _ c l i e n t
+#=====================================================================================
+#=====================================================================================
 
 def db_add_client(MAC, record):
     """ Add a single client to the database.
     Returns macoui so that do_update may use if for notification
     """
     macoui = lookup_MAC(MAC)
-    cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
+    cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, last_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
         config.getcfg('DB_TABLE'),
         MAC,
         macoui,
         record['hostname'],
         "-",
-        time.time(),
+        int(time.time()),
+        record['last_seen'],
         record['IP'],
         record['expiry'])
     db_cursor.execute(cmd)
     return macoui
 
 
+#=====================================================================================
+#=====================================================================================
+#   l o o k u p _ M A C
+#=====================================================================================
+#=====================================================================================
+
+MAC_LOOKUP_RATE = 0.75
 next_lookup = time.time()
 def lookup_MAC(MAC):
     """ Given MAC 00:05:cd:8a:22:33, get OUI from https://api.macvendors.com/00:05:cd
@@ -256,13 +320,16 @@ def lookup_MAC(MAC):
 
     for _ in range(3):
         while 1:
+            time.sleep(0.1)
             if time.time() > next_lookup:
                 break
         r = requests.get("https://api.macvendors.com/" + MAC[0:8])
-        next_lookup = time.time() + 0.6
+        next_lookup = time.time() + MAC_LOOKUP_RATE
 
         logging.debug (f"r.status_code: {r.status_code}, r.text: {r.text}")
-        if r.status_code == 200:
+        if r.status_code == 429:
+            logging.warning (f"MAC lookup rate warning for <{MAC}>")
+        if r.status_code == 200  and  '\\' not in r.text:
             return r.text
     return "--none--"
 
@@ -294,6 +361,12 @@ def lookup_MAC(MAC):
     # return html.unescape(search_result)
 
 
+#=====================================================================================
+#=====================================================================================
+#   g e t _ d a t a b a s e _ c l i e n t s
+#=====================================================================================
+#=====================================================================================
+
 def get_database_clients(dump=False, search=None):
     """ Get clients currently in the database, return a dictionary of dictionaries, keyed by MAC
         {
@@ -309,13 +382,14 @@ def get_database_clients(dump=False, search=None):
             "IP":         row['IP'],
             "expiry":     row['expiry'],
             "first_seen": row['first_seen'],
+            "last_seen":  row['last_seen'],
             "notes":      row['notes'],
             "MACOUI":     row['MACOUI'] }
 
     if dump:
         if sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
-        elif sort_by in ["first_seen", "expiry"]:
+        elif sort_by in ["first_seen", 'last_seen', "expiry"]:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
         else:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
@@ -327,64 +401,102 @@ def get_database_clients(dump=False, search=None):
         for MAC in clients_list:
 
             first_seen = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['first_seen'])))
-            if clients_list[MAC]['expiry'] == 0:
-                expiry = "static lease"
-            else:
-                expiry = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['expiry'])))
+            # last_seen =  str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['last_seen'])))
+            
+            expiry = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['expiry'])))  if clients_list[MAC]['expiry'] != 0  else 'static lease'
+            # if clients_list[MAC]['expiry'] == 0:
+            #     expiry = "static lease"
+            # else:
+            #     expiry = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['expiry'])))
 
-            if search=="" or \
+            last_seen = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['last_seen'])))  if clients_list[MAC]['last_seen'] != 0  else ''
+            if clients_list[MAC]['last_seen'] == 0:
+                last_seen = ''
+            else:
+                last_seen = str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['last_seen'])))
+
+            if search=='' or \
                         search in MAC or \
                         search in clients_list[MAC]['hostname'].lower() or \
                         search in clients_list[MAC]['IP'] or \
                         search in expiry.lower() or \
                         search in first_seen.lower() or \
+                        search in last_seen.lower() or \
                         search in clients_list[MAC]['MACOUI'].lower() or \
                         search in clients_list[MAC]['notes'].lower():
                 count += 1
                 if first:
-                    print(f"{'Hostname':<25}  {'First seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'MAC':<17}  "
+                    print(f"{'Hostname':<25}  {'First seen':<19}  {'Last seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'MAC':<17}  "
                         + f"{'MAC Org Unique ID':<{config.getcfg('MACOUI_field_width', 30)}}  {'Notes'}")                    
                     first = False
                 _macoui = clients_list[MAC]['MACOUI'][:config.getcfg('MACOUI_field_width', 30)]
-                print(f"{clients_list[MAC]['hostname']:<25}  {first_seen:<19}  {clients_list[MAC]['IP']:<15}  {expiry:<19}  {MAC:<17}  "
+                print(f"{clients_list[MAC]['hostname']:<25}  {first_seen:<19}  {last_seen:<19}  {clients_list[MAC]['IP']:<15}  {expiry:<19}  {MAC:<17}  "
                     + f"{_macoui:<{config.getcfg('MACOUI_field_width', 30)}}  {clients_list[MAC]['notes']}")
         print (f"  <{count}>  known clients.")
 
     return clients_list
 
 
+
+#=====================================================================================
+#=====================================================================================
+#   g e t _ d h c p _ c l i e n t s
+#=====================================================================================
+#=====================================================================================
+
 def get_dhcp_clients(dump=False):
     """ Get leases from the dhcp server, return a tuple of (status, sorted dictionary of dictionaries keyed by MAC)
         {
-            MAC:  { hostname:, IP:, expiry: }
+            MAC:  { hostname:<>, IP:<>, last_seen<>:, expiry<>: }
         }
     """
-    clients_list = {}
-    clients = ""
-    if config.getcfg("DHCP_SERVER_TYPE").lower() == "pfsense":
+
+    if config.getcfg("DHCP_SERVER_TYPE") == "pfSense_unofficialV2":
         try:
-            pf_clients = scrape_pfsense_dhcp(config.getcfg("PF_DHCP_URL"), config.getcfg("PF_USER"), config.getcfg("PF_PASS"))
+            # clients_list = get_leases_MIM_api(config.getcfg("PF_DHCP_URL"), config.getcfg("PF_USER"), config.getcfg("PF_PASS"))
+            clients_list = get_leases_unofficialV2_api()
         except Exception as e:
-            logging.warning(f"{type(e).__name__}:\n  {e}")
+            logging.warning(f"{type(e).__name__}:  {e}")
             raise
-        for row in pf_clients:
-            if row["End"] == "n/a":
-                expiry_timestamp = 0
-            else:
-                expiry_timestamp = datetime.datetime.strptime(row["End"], config.getcfg("PF_DATE_FORMAT")).timestamp()    # '2021/11/07 11:51:44'
-            # pfsense+ version 23.09-RELEASE changed the case on table headers for the DHCP leases list
-            # clients_list[row["MAC address"]] = {"hostname":row["Hostname"], "IP":row["IP address"], "expiry":expiry_timestamp}
-            clients_list[row["MAC Address"]] = {"hostname":row["Hostname"], "IP":row["IP Address"], "expiry":expiry_timestamp}
+
+    # clients_list = {}
+    # clients = ""
+    elif config.getcfg("DHCP_SERVER_TYPE") == "pfSense+_MIMAPI":
+        try:
+            # clients_list = get_leases_MIM_api(config.getcfg("PF_DHCP_URL"), config.getcfg("PF_USER"), config.getcfg("PF_PASS"))
+            clients_list = get_leases_MIM_api()
+        except Exception as e:
+            logging.warning(f"{type(e).__name__}:  {e}")
+            raise
+        # for row in pf_clients:
+        #     logging.debug (f"row: {row}")
+        #     expiry_timestamp = datetime.datetime.strptime(row["expiry"], config.getcfg("PF_DATE_FORMAT")).timestamp()    # '2021/11/07 11:51:44'
+            # clients_list[row["mac"]] = {"hostname":row["hostname"], "IP":row["IP"], "last_seen":row["expiry"]:expiry_timestamp}
+    
+    elif config.getcfg("DHCP_SERVER_TYPE") == "pfSense_pagescrape":
+        try:
+            # clients_list = scrape_pfsense_dhcp_page(config.getcfg("PF_DHCP_URL"), config.getcfg("PF_USER"), config.getcfg("PF_PASS"))
+            clients_list = scrape_pfsense_dhcp_page()
+            # print (pf_clients)
+        except Exception as e:
+            logging.warning(f"{type(e).__name__}:  {e}")
+            raise
+        # for row in pf_clients:
+        #     logging.debug (f"row: {row}")
+        #     if row["End"] == "n/a":
+        #         expiry_timestamp = 0
+        #     else:
+        #         expiry_timestamp = datetime.datetime.strptime(row["End"], config.getcfg("PF_DATE_FORMAT")).timestamp()    # '2021/11/07 11:51:44'
+        #     # pfsense+ version 23.09-RELEASE changed the case on table headers for the DHCP leases list
+        #     # clients_list[row["MAC address"]] = {"hostname":row["Hostname"], "IP":row["IP address"], "expiry":expiry_timestamp}
+        #     clients_list[row["MAC Address"]] = {"hostname":row["Hostname"], "IP":row["IP Address"], "expiry":expiry_timestamp}
     
     elif config.getcfg("DHCP_SERVER_TYPE").lower() == "dd-wrt":
         try:
             _cmd = ["ssh", "root@" + config.getcfg("DDWRT_IP"), "-o", "ConnectTimeout=1", "-T", "cat", config.getcfg("DDWRT_DHCP")]
-            if PY_VERSION >= (3, 7): #3.7:
-                clients = subprocess.run(_cmd, capture_output=True, text=True).stdout.split("\n")
-            else:   #Py 3.6 .run does not support capture_output, so use the old method.
-                clients = subprocess.run(_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True).stdout.split("\n")
+            clients = subprocess.run(_cmd, capture_output=True, text=True).stdout.split("\n")
         except Exception as e:
-            logging.warning(f"Exception:\n  {e}")
+            logging.warning(f"Exception:\n  {type(e).__name__}:\n  {type(e).__name__}:  {e}")
             return False, ""
             # logging.warning("Exception <{}>".format(e))
         # 1587457675 00:0d:c5:5c:82:6d 192.168.1.105 Hopper-ETH0 01:00:0d:c5:5c:82:6d
@@ -397,15 +509,18 @@ def get_dhcp_clients(dump=False):
                 if len(line) > 0:
                     logging.warning ("ERROR in get_dhcp_clients:  This line looks bogus:\n  ", line)
     else:
-        logging.error (f"Invalid DHCP_SERVER_TYPE in config: {config.getcfg('DHCP_SERVER_TYPE')}")
+        logging.exception (f"Invalid DHCP_SERVER_TYPE in config: {config.getcfg('DHCP_SERVER_TYPE')}")
+        # logging.error (f"Invalid DHCP_SERVER_TYPE in config: {config.getcfg('DHCP_SERVER_TYPE')}")
         cleanup(EXIT_FAIL)
 
+
     if dump:
+        print(f"{'MAC':<19}  {'IP':<15}  {'hostname':<25}  {'last_seen':<20}  {'expiry'}")
         if sort_by == 'MAC':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
         elif sort_by in ["hostname", "IP"]:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
-        elif sort_by == "expiry":
+        elif sort_by in ["last_seen", "expiry"]:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
         else:
             print (f"For --list-dhcp-server, <--sort-by {sort_by}> not supported.  Defaulting to <--sort-by hostname>.")
@@ -414,26 +529,284 @@ def get_dhcp_clients(dump=False):
         count = 0
         for client in clients_list:
             count += 1
-            if clients_list[client]["expiry"] == 0:
-                expiry = "static lease"
-            else:
-                expiry = str(datetime.datetime.fromtimestamp(int(clients_list[client]["expiry"])))
+            last_seen = ''              if clients_list[client]["last_seen"] == 0  else  str(datetime.datetime.fromtimestamp(int(clients_list[client]["last_seen"])))
+            expiry =    "static lease"  if clients_list[client]["expiry"] == 0     else  str(datetime.datetime.fromtimestamp(int(clients_list[client]["expiry"])))
 
-            print(f"{expiry:<19}  {client}  {clients_list[client]['IP']:<15}  {clients_list[client]['hostname']}")
+            print(f"{client:<19}  {clients_list[client]['IP']:<15}  {clients_list[client]['hostname']:<25}  {last_seen:<20}  {expiry}")
         print (f"  <{count}>  known clients.")
 
     return clients_list
 
 
-def scrape_pfsense_dhcp(url, user, password):
-    """Queries the pfsense (+v2.4) dhcp leases status page and returns a list of dictionaries, one for each table row.
+#=====================================================================================
+#=====================================================================================
+#   g e t _ l e a s e s _ M I M _ a p i
+#=====================================================================================
+#=====================================================================================
+
+# def get_leases_MIM_api(controller_url, user, password, device='localhost'):
+def get_leases_MIM_api( device='localhost'):
+    """Queries the pfSense+ multi-instance management (MIM) "Controller" API get_dhcp_leases for the specified device (appliance/host)
+
+    controller_url - is the appliance/device providing the MIM "Controller" interface - must be a https address
+    user/password - Login credentials on the MIM Controller
+    device - name of the device (managed by the controller) to be accessed (default localhost)
+    """
+
+    controller_url = config.getcfg('PF_CONTROLLER_URL', section='pfSense+_MIMAPI')
+    device = config.getcfg('PF_APPLIANCE', section='pfSense+_MIMAPI')
+    user = config.getcfg('PF_USER', section='pfSense+_MIMAPI')
+    password = config.getcfg('PF_PASS', section='pfSense+_MIMAPI')
+
+    cert_path = config.getcfg('PF_CERT_PATH', False, section='pfSense+_MIMAPI')
+
+    # Login to controller. Username and password must be base64 encoded.
+    # For security, the credentials should be loaded from a protected file
+    # on the system or entered interactively (using other python libraries)
+    from pfapi import Client, AuthenticatedClient
+    client = Client(base_url=controller_url+"/api",
+                    verify_ssl=False,
+                    headers={"Content-Type": "application/json"})
+
+    _username = base64.b64encode(user.encode('utf-8')).decode('utf-8')
+    _password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
+    loginCred = LoginCredentials(username=_username, password=_password)
+    # print (loginCred)
+    resp = login.sync(client=client, body=loginCred)
+
+    # Successful login will return a token in LoginReponse; keep it to
+    # create Authenticated client.
+    if not isinstance(resp, LoginResponse):
+        print("login failed:", resp)
+        sys.exit(1)
+    # print("Response token received from controller:", resp.token)
+    token = resp.token
+    sessInfo = json.loads(base64.b64decode(token.split(".")[1].encode('utf-8') + b'==').decode('utf-8'))
+    expires = time.localtime(sessInfo['exp'])
+
+    # Print expiration of access token, must call refresh_access_token to continue
+    # to access API.
+    # print("Token expires at:", time.strftime("%a, %d %b %Y %H:%M:%S +0000", expires))
+
+    # Cookie jar contains the 24-hour refresh token, which is used to refresh 
+    # the session access token (via API: /login/refresh)
+    cookies = client.get_httpx_client().cookies
+
+    # Create an authenticated client, which will send the bearer (access) token for
+    # all API requests to the controller
+    client = AuthenticatedClient(base_url=controller_url+"/api",
+                    verify_ssl=cert_path,
+                    headers={"Content-Type": "application/json"},
+                    cookies=cookies,
+                    token=token)
+
+    # Create a per-device API client instance and use the same
+    # cookie jar and session token.
+    #
+    # Set the base path for each device API. It has the format:
+    #   /api/device/{device-type}/{device-id}/api
+
+
+    # print ('device_id: ', device.device_id)
+    devApi = AuthenticatedClient(base_url=controller_url+f"/api/device/pfsense/{device}/api",
+                verify_ssl=False,
+                headers={"Content-Type": "application/json"},
+                cookies=cookies,
+                token=token)
+
+
+
+    # sysStatus = get_services_dhcp_leases.sync(client=devApi)
+    leases = get_dhcp_leases.sync(client=devApi).to_dict()
+    if not 'v4leases' in leases:
+        raise ValueError ("v4leases not found in server response - Aborting")
+        # sys.exit(1)
+
+    # print (leases)
+    lease_dict = {}
+    # print("\n\nLeases:", leases)
+    for item in leases["v4leases"]:
+        # last_seen_timestamp = datetime.datetime.strptime(item['cltt'][0:19],  config.getcfg("PF_DATE_FORMAT")).timestamp()
+        # expiry_timestamp =    datetime.datetime.strptime(item['end'],         config.getcfg("PF_DATE_FORMAT")).timestamp()
+        last_seen_timestamp = datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()
+        expiry_timestamp =    datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()
+
+        lease_dict[item['mac']] = {'IP':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
+        logging.debug (f"lease entry:  <{item['mac']}>:  <{lease_dict[item['mac']]}>")
+        # print (lease_dict, item['type'], item['cid'])
+        # print (f"{item['host']:25} {item['type']} {item['start']} {item['cltt'][0:19]}")
+        # lease_list.append(lease_dict)
+
+    return lease_dict
+
+
+    #     lease_dict = {'mac':item['mac'], 'IP':item['ip'], 'hostname':item['host'], 'expiry': item['end'], 'last_seen':item['cltt'][0:19]}
+    #     print (lease_dict, item['type'], item['cid'])
+    #     # print (f"{item['host']:25} {item['type']} {item['start']} {item['cltt'][0:19]}")
+    #     lease_list.append(lease_dict)
+
+    # return lease_list
+        
+
+    # # for item in leases['DHCPLeases']['v4leases']:
+    #     print (f"{item['host']:22}{item['ip']:17}{item['mac']:20}{item['end']}")
+
+    # sys.exit()
+
+        # for client in clients_list:
+        #     count += 1
+        #     if clients_list[client]["expiry"] == 0:
+        #         expiry = "static lease"
+        #     else:
+        #         expiry = str(datetime.datetime.fromtimestamp(int(clients_list[client]["expiry"])))
+
+        #     print(f"{expiry:<19}  {client}  {clients_list[client]['IP']:<15}  {clients_list[client]['hostname']}")
+        # print (f"  <{count}>  known clients.")
+
+
+#=====================================================================================
+#=====================================================================================
+#   g e t _ l e a s e s _ u n o f f i c i a l V 2 _ a p i
+#=====================================================================================
+#=====================================================================================
+
+def get_leases_unofficialV2_api(): # device='localhost'):
+    """Queries the pfSense Unofficial V2 status/dhcp_server/leases of the specified device (appliance/host)
+    """
+
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    url =       config.getcfg('PF_URL', section='pfSense_unofficialV2')
+    api_key =   config.getcfg('API_KEY', section='pfSense_unofficialV2')
+
+    headers = {
+        "X-API-KEY": api_key,
+        "Accept": "application/json"
+    }
+
+    # Example: get DHCPv4 leases
+    resp = requests.get(f"{url}/api/v2/status/dhcp_server/leases",
+                        headers=headers,
+                        verify=False)  # Or path to CA cert
+
+    resp.raise_for_status()
+    leases = resp.json().get("data", [])
+    # for item in leases:
+    #     print (l)
+    # exit()
+
+# {'id': 0, 'ip': '192.168.1.90', 'mac': '12:34:56:78:90:ab', 'hostname': 'Template', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'idle/offline', 'descr': 'Template <staticmap> entry'}
+# {'id': 1, 'ip': '192.168.1.71', 'mac': 'ab:ab:ab:ab:ab:a3', 'hostname': 'h71', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'idle/offline', 'descr': 'Host71 with custom Kea config'}
+# {'id': 2, 'ip': '192.168.1.70', 'mac': '70:88:6b:86:ce:82', 'hostname': 'flex2', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'active/online', 'descr': 'My noteboot2'}
+# {'id': 3, 'ip': '192.168.1.51', 'mac': '70:88:6b:86:ce:81', 'hostname': 'flex1', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'idle/offline', 'descr': 'My notebook1 with bad < characters > & hello'}
+# {'id': 4, 'ip': '192.168.1.50', 'mac': '70:88:6b:86:ce:80', 'hostname': 'flex', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'idle/offline', 'descr': 'My noteboot'}
+# {'id': 5, 'ip': '192.168.1.100', 'mac': '70:88:6b:86:ce:83', 'hostname': 'cjnflex5.', 'if': None, 'starts': '2025/11/28 18:15:41', 'ends': '2025/11/28 20:15:41', 'active_status': 'active', 'online_status': 'active/online', 'descr': None}
+
+    if len(leases) == 0:
+        raise ValueError ("No leases found on the server - Aborting")
+        sys.exit(1)
+
+    # print (leases)
+    lease_dict = {}
+    # print("\n\nLeases:", leases)
+    for item in leases:
+        # last_seen_timestamp = datetime.datetime.strptime(item['cltt'][0:19],  config.getcfg("PF_DATE_FORMAT")).timestamp()
+        # expiry_timestamp =    datetime.datetime.strptime(item['end'],         config.getcfg("PF_DATE_FORMAT")).timestamp()
+        last_seen_timestamp = datetime.datetime.strptime(item['starts'],      '%Y/%m/%d %H:%M:%S').timestamp()  if item['starts']  else 0
+        expiry_timestamp =    datetime.datetime.strptime(item['ends'],        '%Y/%m/%d %H:%M:%S').timestamp()  if item['ends']    else 0
+
+        lease_dict[item['mac']] = {'IP':item['ip'], 'hostname':item['hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
+        logging.debug (f"lease entry:  <{item['mac']}>:  <{lease_dict[item['mac']]}>")
+        # print (lease_dict, item['type'], item['cid'])
+        # print (f"{item['host']:25} {item['type']} {item['start']} {item['cltt'][0:19]}")
+        # lease_list.append(lease_dict)
+
+    return lease_dict
+
+
+
+#=====================================================================================
+#=====================================================================================
+#   s c r a p e _ p f s e n s e _ d h c p _ p a g e
+#=====================================================================================
+#=====================================================================================
+
+# def scrape_pfsense_dhcp_page(url, user, password):
+def scrape_pfsense_dhcp_page(): #url, user, password):
+    """Queries the pfSense Plus 25.07.1 RELEASE / pfSense CE 2.8.0 dhcp leases status page and returns a list of dictionaries, 
+    one dict for each table row.
     The dictionary keys are the column names, such as "Hostname", "IP address", and "MAC address".
     
-    Adapted from Github pletch/scrape_pfsense_dhcp_leases.py (https://gist.github.com/pletch/037a4a01c95688fff65752379534455f), thank you pletch.
+    Adapted from Github pletch/scrape_pfsense_dhcp_page_leases.py (https://gist.github.com/pletch/037a4a01c95688fff65752379534455f), thank you pletch.
     """
+
+    # Given Status > DHCP Leases page (25.07.1 RELEASE):
+    """
+    <div class="panel panel-default">
+        <div class="panel-heading"><h2 class="panel-title">Leases</h2></div>
+        <div class="panel-body table-responsive">
+            <table class="table table-striped table-hover table-condensed sortable-theme-bootstrap" data-sortable>
+                <thead>
+                    <tr>
+                        <th data-sortable="false"><!-- icon --></th>
+                        <th>IP Address</th>
+                        <th>MAC Address</th>
+                        <th>Hostname</th>
+                        <th>Description</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th data-sortable="false">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="leaselist">
+                    <tr>
+                        <td>
+                            <i class="fa-solid fa-user act" title="static"></i>
+                            <i class="fa-solid fa-arrow-down online" title="idle/offline"></i>
+                        </td>
+                        <td>192.168.66.77</td>
+                        <td>
+                            e4:fa:c4:11:22:33
+                                                </td>
+                        <td>
+                            <i class="fa-solid fa-globe" title="Registered with the DNS Resolver"></i>
+                            hostname_gws</td>
+                        <td></td>
+                                                <td>n/a</td>
+                            <td>n/a</td>
+                                            <td>
+                            <a class="fa-solid fa-plus-square" title="Add WOL mapping" href="services_wol_edit.php?if=opt6&amp;mac=e4:fa:c4:8d:8a:f1&amp;descr=gwsBed5"></a>
+                            <a class="fa-solid fa-power-off" title="Send WOL packet" href="services_wol.php?if=opt6&amp;mac=e4:fa:c4:8d:8a:f1" usepost></a>
+                            <a class="fa-solid fa-pencil"	title="Edit static mapping" href="services_dhcp_edit.php?if=opt6&amp;id=6"></a>
+                        </td>
+                    </tr>
+    """
+
+    logging.debug ("in scraper")
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     s = requests.session()
+    s.verify = False
+    # s.verify = config.getcfg('PF_PUBCERT_PATH', False)
+    # print (s.verify)
+    # public_cert_path = config.getcfg('PF_PUBCERT_PATH', False)
+    # priv_key_path = config.getcfg('PF_PRIVKEY_PATH', False)
+
+    # xx = (public_cert_path, priv_key_path)  if public_cert_path  else None
+
+    url = config.getcfg('PF_URL', section='pfSense_pagescrape')
+    login_page = url + '/index.php'
+    dhcpleases_page = url + '/status_dhcp_leases.php'
+    page_timeout = timevalue(config.getcfg('Page_timeout', section='pfSense_pagescrape')).seconds
+    user = config.getcfg('PF_USER', section='pfSense_pagescrape')
+    password = config.getcfg('PF_PASS', section='pfSense_pagescrape')
+
     try:
-        r = s.get(url,verify = False)
+        # r = s.get(url, verify=True, cert=xx)
+        # r = s.get(url, verify=False)
+        r = s.get(login_page, timeout=page_timeout)                 # Bring up login page, get csrf
+        
+        # exit()
     # except:
     #     logging.error(f"Error attempting to connect to <{url}>.  url and login credentials valid?")
     #     raise IOError("Could not read DHCP clients from the pfsense router")
@@ -443,41 +816,65 @@ def scrape_pfsense_dhcp(url, user, password):
         matchme = 'csrfMagicToken = "(.*)";var'
         csrf = re.search(matchme,str(r.text))
         payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : user, 'passwordfld' : password}
-        r = s.post(url,data=payload,verify = False)
-        r = s.get(url,verify = False)
+        # r = s.post(url,data=payload,verify = cert_path)
+        # r = s.get(url,verify = cert_path)
+        r = s.post(login_page, data=payload, timeout=page_timeout)  # login
+        r = s.get (dhcpleases_page, timeout=page_timeout)           # get DHCP leases page
+
         tree = _html.fromstring(r.content)
-
-        headers = []
+        column_names = []
         none_index = 0
-        tr_elements = tree.xpath('//tr')
-        for header in tr_elements[0]:
-            name = header.text
-            if name == None:            # Ensure unique name for each column with no name
-                name = "None" + str(none_index)
-                none_index += 1
-            headers.append(name)
+        # Find the <h2 class="panel-title"> with text "Leases", then up to the surrounding panel
+        leases_panel = tree.xpath('//h2[@class="panel-title" and text()="Leases"]/ancestor::div[contains(@class,"panel")]')
 
-        least_list = []
-        # //div[2] >> //div[3] due to added ISCDHCP EOL note at top
-        # xpath_base = '//body[1]//div[1]//div[2]//div[2]//table[1]//tbody//tr'
-        # TODO Index down to the 'Leases' table, rather than hard coded xpath_base
-        xpath_base = '//body[1]//div[1]//div[3]//div[2]//table[1]//tbody//tr'
-        for row in tree.xpath(xpath_base):
+        if not leases_panel:
+            return None
+
+
+        # Index to the table inside this panel
+        table = leases_panel[0].xpath('.//table')[0]
+
+        # Build list of column names
+        column_names = []
+        none_index = 0
+        for th in table.xpath('.//thead/tr/th'):
+            _col = th.text_content()
+            if _col is None  or  _col == '':   # Ensure unique name for each column with no name
+                colname = "None" + str(none_index)
+                none_index += 1
+            else:
+                colname = _col.strip()
+            column_names.append(colname)
+        logging.debug (f"Column names: <{column_names}>")
+
+        # Extract rows
+        lease_dict = {}
+        for tr in table.xpath('.//tbody/tr'):
             row_dict = {}
-            header_index = 0
-            for node in row:
-                item_text = node.text
-                if item_text != None:
-                    item_text = item_text.strip()
-                row_dict[headers[header_index]] = item_text
-                header_index += 1
-            least_list.append(row_dict)
-        
-        return(least_list)
+            _row = [td.text_content().strip() for td in tr.xpath('td')]
+            # print (_row)
+            for colname, item in zip(column_names, _row):
+                row_dict[colname] = item
+
+            last_seen_timestamp = 0  if row_dict['Start'] == 'n/a'  else  datetime.datetime.strptime(row_dict['Start'], '%Y/%m/%d %H:%M:%S').timestamp()
+            expiry_timestamp =    0  if row_dict['End'] == 'n/a'    else  datetime.datetime.strptime(row_dict['End'],   '%Y/%m/%d %H:%M:%S').timestamp()
+
+            # logging.debug (f"mac {row_dict['MAC Address']}, 'IP':{row_dict['IP Address']}, hostname':{row_dict['Hostname']}, 'last_seen':{last_seen_timestamp}, 'expiry':{expiry_timestamp}")
+            lease_dict[row_dict['MAC Address']] = {'IP':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
+            logging.debug (f"<{row_dict['MAC Address']}>:  <{lease_dict[row_dict['MAC Address']]}>")
+
+        return lease_dict
+
     except Exception as e:
-        logging.error(f"{type(e).__name__} when attempting to connect to or get DHCP data from <{url}>.\n  {e}")
+        logging.error(f"Failed to connect to or get DHCP data from <{url}>.\n  {type(e).__name__}:  {e}")
         raise ConnectionError("pfsense router access error")
 
+
+#=====================================================================================
+#=====================================================================================
+#   template functions
+#=====================================================================================
+#=====================================================================================
 
 def cleanup(exit_code):
     if exit_code == EXIT_FAIL:
@@ -528,6 +925,8 @@ def cli():
                         help=f"Print the tail end of the log file (default last {PRINTLOGLENGTH} lines).")
     parser.add_argument('--service', action='store_true',
                         help="Run updates in an endless loop for use as a systemd service.")
+    parser.add_argument('-v', '--verbose', action='count',
+                        help="Print status and activity messages (-vv for debug logging)")
     parser.add_argument('--setup-user', action='store_true',
                         help=f"Install starter files in user space.")
     parser.add_argument('--setup-site', action='store_true',
@@ -564,7 +963,7 @@ def cli():
         config.loadconfig(call_logfile_wins=logfile_override)         #, call_logfile=args.log_file, ldcfg_ll=10)
     except Exception as e:
         logging.error(f"Failed loading config file <{args.config_file}>. \
-\n  Run with  '--setup-user' or '--setup-site' to install starter files.\n  {e}\n  Aborting.")
+\n  Run with  '--setup-user' or '--setup-site' to install starter files - Aborting\n  {type(e).__name__}:  {e}")
         sys.exit(EXIT_FAIL)
 
 
@@ -581,7 +980,7 @@ def cli():
             for line in _xx:
                 print (line, end="")
         except Exception as e:
-            print (f"Couldn't print the log file.  LogFile defined in the config file?\n  {e}")
+            print (f"Couldn't print the log file.  LogFile defined in the config file?\n  {type(e).__name__}:  {e}")
         sys.exit()
 
 
