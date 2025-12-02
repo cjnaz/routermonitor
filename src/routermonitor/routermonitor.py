@@ -72,11 +72,8 @@ CONFIG_FILE         = 'routermonitor.cfg'
 PRINTLOGLENGTH      = 40
 EXIT_GOOD           = 0
 EXIT_FAIL           = 1
-# SORT_MODES          = ['hostname', 'IP', 'first_seen', 'last_seen', 'expiry', 'MAC', 'MACOUI', 'notes']
-SORT_MODES          = ['hostname', 'ip', 'first_seen', 'last_seen', 'expiry', 'mac', 'macoui', 'notes']
+SORT_MODES          = ['hostname', 'ip', 'first_seen', 'last_seen', 'expiry', 'device', 'mac', 'macoui', 'notes']
 DEFAULT_SORT_MODE   = 'hostname'   # If not specified in config file or command line
-# PY_VERSION          = sys.version_info
-# SYSTEM              = platform.system()     # 'Linux', 'Windows', ...
 
 
 #=====================================================================================
@@ -94,14 +91,14 @@ def main():
     db_connect()
 
     # List known clients from database
-    if args.list_db or args.SearchTerm != None:
+    if args.list_db: # or args.SearchTerm != None:
         get_database_clients(dump=True, search=args.SearchTerm)
         cleanup(EXIT_GOOD)
 
 
     # List known clients from dhcp server
     if args.list_dhcp_server:
-        get_dhcp_clients(dump=True)
+        get_dhcp_clients(dump=True, search=args.SearchTerm)
         cleanup(EXIT_GOOD)
 
 
@@ -204,7 +201,7 @@ def db_connect():
         db_cursor.execute(f"DROP TABLE {config.getcfg('DB_Table')}")
         db_connection.commit()
     
-    db_fields = 'MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, last_seen INT, expiry INT, ip VARCHAR(15), MACOUI VARCHAR(255)'
+    db_fields = 'MAC VARCHAR(17), hostname VARCHAR(25), notes VARCHAR(255), first_seen INT, last_seen INT, expiry INT, ip VARCHAR(15), macoui VARCHAR(255), device VARCHAR(255)'
     if not found or args.create_db:
         logging.warning ("Creating network clients database table:")
         try:
@@ -216,12 +213,12 @@ def db_connect():
             for MAC in dhcp_clients:
                 count += 1
                 macoui = db_add_client (MAC, dhcp_clients[MAC])
-                logging.info (f"  {dhcp_clients[MAC]['hostname']:25}  {dhcp_clients[MAC]['ip']:15}  {MAC}   {macoui}")
+                logging.info (f"  {dhcp_clients[MAC]['hostname']:25}  {dhcp_clients[MAC]['ip']:15}  {dhcp_clients[MAC]['device']:30}  {MAC}   {macoui}")
             db_connection.commit()
             logging.info  (f"Database table created with  <{count}>  clients.")
             cleanup(EXIT_GOOD)
         except Exception as e:
-            logging.error  (f"Database table creation failed - Aborting\n  {type(e).__name__}:  {e}")  # TODO type
+            logging.error  (f"Database table creation failed - Aborting\n  {type(e).__name__}:  {e}")
             cleanup(EXIT_FAIL)
 
 
@@ -250,7 +247,7 @@ def do_update():
                 except Exception as e:
                     logging.warning(f"snd_notif error for <{subject}>\n  {type(e).__name__}:  {e}")
                 continue
-            if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']:
+            if dhcp_clients[MAC]['hostname'] != database_clients[MAC]['hostname']  and  dhcp_clients[MAC]['hostname'] != '':    # Don't blank the hostname if blank in an update. Seen in MIMAPI mode.
                 msg = (f"{MAC} / {database_clients[MAC]['hostname']:<20} New hostname:   {dhcp_clients[MAC]['hostname']}")
                 logging.info(msg)
                 db_cursor.execute(f"UPDATE {config.getcfg('DB_Table')} SET hostname = \'{dhcp_clients[MAC]['hostname']}\' WHERE MAC = '{MAC}'")
@@ -285,16 +282,28 @@ def db_add_client(MAC, record):
     Returns macoui so that do_update may use if for notification
     """
     macoui = lookup_MAC(MAC)
-    cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, last_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
+    first_seen = int(time.time())  if record['last_seen'] == 0  else record['last_seen']
+    cmd = "INSERT INTO {} (MAC, macoui, hostname, notes, first_seen, last_seen, IP, expiry, device) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {}, \'{}\')".format(
         config.getcfg('DB_Table'),
         MAC,
         macoui,
         record['hostname'],
         '-',
-        int(time.time()),
+        first_seen,
         record['last_seen'],
         record['ip'],
-        record['expiry'])
+        record['expiry'],
+        record['device'])
+    # cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, last_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
+    #     config.getcfg('DB_Table'),
+    #     MAC,
+    #     macoui,
+    #     record['hostname'],
+    #     '-',
+    #     int(time.time()),
+    #     record['last_seen'],
+    #     record['ip'],
+    #     record['expiry'])
     db_cursor.execute(cmd)
     return macoui
 
@@ -318,6 +327,9 @@ def lookup_MAC(MAC):
     """
 
     global next_lookup
+
+    if config.getcfg('skip_macoui_lookup', False):
+        return 'macoui-placeholder'
 
     for _ in range(3):
         while 1:
@@ -368,10 +380,10 @@ def lookup_MAC(MAC):
 #=====================================================================================
 #=====================================================================================
 
-def get_database_clients(dump=False, search=None):
+def get_database_clients(dump=False, search=''):
     """ Get clients currently in the database, return a dictionary of dictionaries, keyed by MAC
         {
-            MAC:  { hostname:, IP:, expiry:, first_seen:, notes:, MACOUI: }
+            MAC:  { hostname:<>, IP<>:, expiry<>:, first_seen<>:, notes<>:, macoui<>:, device<>: }
         }
     """
     global sort_by
@@ -385,7 +397,9 @@ def get_database_clients(dump=False, search=None):
             'first_seen': row['first_seen'],
             'last_seen':  row['last_seen'],
             'notes':      row['notes'],
-            'macoui':     row['macoui'] }
+            'macoui':     row['macoui'],
+            'device':     row['device'] }
+
 
     if dump:
         if sort_by == 'mac':
@@ -394,34 +408,39 @@ def get_database_clients(dump=False, search=None):
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
         else:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
-        first=True
-        if search == None:
-            search = ''
-        search = search.lower()
-        count = 0
-        for MAC in clients_list:
 
-            first_seen =    str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['first_seen'])))
-            last_seen =     str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['last_seen'])))  if clients_list[MAC]['last_seen'] != 0  else ''
-            expiry =        str(datetime.datetime.fromtimestamp(int(clients_list[MAC]['expiry'])))     if clients_list[MAC]['expiry'] != 0     else 'static lease'
+        search =                search.lower()
+        count =                 0
+        hostname_field_width =  config.getcfg('hostname_field_width', 25)
+        macoui_field_width =    config.getcfg('macoui_field_width', 30)
+        device_field_width =    config.getcfg('device_field_width', 20)
+
+        print(f"{'hostname':<{hostname_field_width}}  {'first_seen':<19}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'device':<{device_field_width}}  "
+            + f"{'mac':<17}  {'macoui':<{macoui_field_width}}  {'notes'}    (Sorted by <{sort_by}>)")
+        # print(f"{'hostname':<{hostname_field_width}}  {'first_seen':<19}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'mac':<17}  "
+        #     + f"{'macoui':<{config.getcfg('macoui_field_width', 30)}}  {'notes'}    (Sorted by <{sort_by}>)")
+
+        for mac in clients_list:
+            first_seen =    str(datetime.datetime.fromtimestamp(int(clients_list[mac]['first_seen'])))
+            last_seen =     str(datetime.datetime.fromtimestamp(int(clients_list[mac]['last_seen'])))  if clients_list[mac]['last_seen'] != 0  else ''
+            expiry =        str(datetime.datetime.fromtimestamp(int(clients_list[mac]['expiry'])))     if clients_list[mac]['expiry'] != 0     else 'static lease'
 
             if search=='' or \
-                        search in MAC or \
-                        search in clients_list[MAC]['hostname'].lower() or \
-                        search in clients_list[MAC]['ip'] or \
-                        search in expiry.lower() or \
-                        search in first_seen.lower() or \
-                        search in last_seen.lower() or \
-                        search in clients_list[MAC]['macoui'].lower() or \
-                        search in clients_list[MAC]['notes'].lower():
-                count += 1
-                if first:
-                    print(f"{'Hostname':<25}  {'First seen':<19}  {'Last seen':<19}  {'Current IP':<15}  {'IP Expiry':<19}  {'mac':<17}  "
-                        + f"{'MAC Org Unique ID':<{config.getcfg('MACOUI_field_width', 30)}}  {'Notes'}")                    
-                    first = False
-                _macoui = clients_list[MAC]['macoui'][:config.getcfg('MACOUI_field_width', 30)]
-                print(f"{clients_list[MAC]['hostname']:<25}  {first_seen:<19}  {last_seen:<19}  {clients_list[MAC]['ip']:<15}  {expiry:<19}  {MAC:<17}  "
-                    + f"{_macoui:<{config.getcfg('MACOUI_field_width', 30)}}  {clients_list[MAC]['notes']}")
+                        search in mac or \
+                        search in clients_list[mac]['hostname'].lower() or \
+                        search in clients_list[mac]['ip'] or \
+                        search in expiry or \
+                        search in first_seen or \
+                        search in last_seen or \
+                        search in clients_list[mac]['macoui'].lower() or \
+                        search in clients_list[mac]['notes'].lower():
+                count +=    1
+                _device =   clients_list[mac]['device'][:device_field_width]     # Slice to limited width
+                _macoui =   clients_list[mac]['macoui'][:macoui_field_width]
+
+                print(f"{clients_list[mac]['hostname']:<{hostname_field_width}}  {first_seen:<19}  {last_seen:<19}  {clients_list[mac]['ip']:<15}  {expiry:<19}  {_device:<{device_field_width}}  "
+                    + f"{mac:<17}  {_macoui:<{macoui_field_width}}  {clients_list[mac]['notes']}")
+
         print (f"  <{count}>  known clients.")
 
     return clients_list
@@ -433,16 +452,20 @@ def get_database_clients(dump=False, search=None):
 #=====================================================================================
 #=====================================================================================
 
-def get_dhcp_clients(dump=False):
+def get_dhcp_clients(dump=False, search=''):
     """ Get leases from the dhcp server, return sorted dictionary of dictionaries keyed by MAC
         {
-            MAC:  { hostname:<str>, IP:<str>, last_seen<timestamp or 0>:, expiry<timestamp or 0>: }
+            MAC:  { hostname:<str>, IP:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, ['device':device] }
         }
-    
-    dump = True forces a pretty print output of the clients_list dictionary
+
+    The 'device' field is returned only for the MIM API, where several devices may be queried.
+        
+    dump = True forces a pretty print output of the clients_list dictionary.  sort-by and search term supported.
         
     Exceptions are logged and raised to caller.  TODO True?
     """
+    global sort_by
+
     clients_list = {}
     sources = config.getcfg('Sources', False)
     if not sources:
@@ -450,6 +473,7 @@ def get_dhcp_clients(dump=False):
         sys.exit(EXIT_FAIL)
 
     for source in sources:
+        source = source.strip()
         if source not in config.sections():
             logging.error (f"Missing source section <{source}> - Aborting")  # TODO log and raise
             cleanup(EXIT_FAIL)
@@ -479,26 +503,54 @@ def get_dhcp_clients(dump=False):
     if dump:
         if sort_by == 'mac':
             clients_list = collections.OrderedDict(sorted(clients_list.items()))
-        elif sort_by in ['hostname', 'ip']:
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
         elif sort_by in ['last_seen', 'expiry']:
             clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by]))
+        elif sort_by in ['hostname', 'ip', 'device']:
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
         else:
             print (f"For --list-dhcp-server, <--sort-by {sort_by}> not supported.  Defaulting to <--sort-by hostname>.")
-            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1]['hostname'].lower()))
+            sort_by = 'hostname'
+            clients_list = collections.OrderedDict(sorted(clients_list.items(), key=lambda t:t[1][sort_by].lower()))
 
-        count = 0
-        print(f"{'mac':<19}  {'ip':<15}  {'hostname':<25}  {'last_seen':<20}  {'expiry'}")
-        for client in clients_list:
-            count += 1
-            last_seen = ''              if clients_list[client]['last_seen'] == 0  else  str(datetime.datetime.fromtimestamp(int(clients_list[client]['last_seen'])))
-            expiry =    'static lease'  if clients_list[client]['expiry'] == 0     else  str(datetime.datetime.fromtimestamp(int(clients_list[client]['expiry'])))
+        search =                search.lower()
+        count =                 0
+        hostname_field_width =  config.getcfg('hostname_field_width', 25)
+        device_field_width =    config.getcfg('device_field_width', 20)
 
-            print(f"{client:<19}  {clients_list[client]['ip']:<15}  {clients_list[client]['hostname']:<25}  {last_seen:<20}  {expiry}")
+        print(f"{'hostname':<{hostname_field_width}}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'device':<{device_field_width}}  {'mac':<17}(Sorted by <{sort_by}>)")
+
+        for mac in clients_list:
+            # count += 1
+            last_seen = ''              if clients_list[mac]['last_seen'] == 0  else  str(datetime.datetime.fromtimestamp(int(clients_list[mac]['last_seen'])))
+            expiry =    'static lease'  if clients_list[mac]['expiry'] == 0     else  str(datetime.datetime.fromtimestamp(int(clients_list[mac]['expiry'])))
+
+            if search=='' or \
+                        search in mac or \
+                        search in clients_list[mac]['hostname'].lower() or \
+                        search in clients_list[mac]['ip'] or \
+                        search in clients_list[mac]['device'] or \
+                        search in expiry or \
+                        search in last_seen:
+                count +=    1
+
+                print(f"{clients_list[mac]['hostname']:<{hostname_field_width}}  {last_seen:<19}  {clients_list[mac]['ip']:<15}  {expiry:<19}  {clients_list[mac]['device']:<{device_field_width}}  {mac:<17}")
+
         print (f"  <{count}>  known clients.")
 
-
     return clients_list
+
+
+def extract_url(url):
+    # Given https://pfsense.mylan:8443        return pfsense.mylan
+    # Given http://pfsense.mylan        also  return pfsense.mylan
+
+    if '//' in url:
+        url = url.split('//')[1]
+
+    if ':' in url:
+        url = url.split(':')[0]
+
+    return url
 
 
 #=====================================================================================
@@ -511,7 +563,9 @@ def get_leases_MIM_api(source):
     """Queries the pfSense+ multi-instance management (MIM) "Controller" API get_dhcp_leases
 
     The returned DHCP clients list contains the merged list of clients from all `DEVICES`, with
-    just one entry for each MAC.
+    just one entry for each MAC.    TODO retain latest last_seen and on which device
+
+    TODO add typical API response structure
  
     ### Config params:
 
@@ -604,6 +658,8 @@ def get_leases_MIM_api(source):
                     cookies=cookies,
                     token=token)
 
+        device_name = extract_url(controller_url)  if device == 'localhost'  else device
+
         # Get leases
         leases = get_dhcp_leases.sync(client=devApi).to_dict()
         if not 'v4leases' in leases:
@@ -613,7 +669,8 @@ def get_leases_MIM_api(source):
             last_seen_timestamp =   datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()
             expiry_timestamp =      datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()
             mac =                   item['mac']
-            lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device}
+
+            lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
             logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
 
     return lease_dict
@@ -636,8 +693,9 @@ def get_leases_unofficialV2_api(source): # device='localhost'):
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    url =       config.getcfg('URL', section=source)
-    api_key =   config.getcfg('API_KEY', section=source)
+    url =           config.getcfg('URL', section=source)
+    api_key =       config.getcfg('API_KEY', section=source)
+    device_name =   extract_url(url)
 
     headers = {
         'X-API-KEY': api_key,
@@ -659,7 +717,7 @@ def get_leases_unofficialV2_api(source): # device='localhost'):
         last_seen_timestamp =   datetime.datetime.strptime(item['starts'],      '%Y/%m/%d %H:%M:%S').timestamp()  if item['starts']  else 0
         expiry_timestamp =      datetime.datetime.strptime(item['ends'],        '%Y/%m/%d %H:%M:%S').timestamp()  if item['ends']    else 0
         mac =                   item['mac']
-        lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
+        lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
         logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
 
     return lease_dict
@@ -674,10 +732,8 @@ def get_leases_unofficialV2_api(source): # device='localhost'):
 def scrape_pfsense_dhcp_page(source):
     """Queries the pfSense Plus 25.07.1 RELEASE / pfSense CE 2.8.0 Status > DHCP Leases page and returns a list of dictionaries, 
     one dict for each table row.
-    """
 
-    # Given Status > DHCP Leases page (25.07.1 RELEASE):
-    """
+    Given Status > DHCP Leases page (25.07.1 RELEASE):
     <div class="panel panel-default">
         <div class="panel-heading"><h2 class="panel-title">Leases</h2></div>
         <div class="panel-body table-responsive">
@@ -728,10 +784,10 @@ def scrape_pfsense_dhcp_page(source):
     url =               config.getcfg('URL', section=source)
     login_page =        url + '/index.php'
     dhcpleases_page =   url + '/status_dhcp_leases.php'
-    page_timeout =      timevalue(config.getcfg('Page_timeout', section=source)).seconds
+    page_timeout =      timevalue(config.getcfg('Page_timeout', '10s', section=source)).seconds
     user =              config.getcfg('USER', section=source)
     password =          config.getcfg('PASS', section=source)
-
+    device_name =       extract_url(url)
     try:
         # r = s.get(url, verify=True, cert=xx)
         # r = s.get(url, verify=False)
@@ -794,7 +850,8 @@ def scrape_pfsense_dhcp_page(source):
 
             # logging.debug (f"mac {row_dict['MAC Address']}, 'IP':{row_dict['IP Address']}, hostname':{row_dict['Hostname']}, 'last_seen':{last_seen_timestamp}, 'expiry':{expiry_timestamp}")
             mac = row_dict['MAC Address']
-            lease_dict[mac] = {'ip':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
+
+            lease_dict[mac] = {'ip':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
             logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
             # lease_dict[row_dict['MAC Address']] = {'IP':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
             # logging.debug (f"<{row_dict['MAC Address']}>:  <{lease_dict[row_dict['MAC Address']]}>")
@@ -837,7 +894,7 @@ def cli():
 
     set_toolname (TOOLNAME)
     parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument('SearchTerm', nargs='?',
+    parser.add_argument('SearchTerm', nargs='?', default= '',
                         help="Print database records containing this text.")
     parser.add_argument('--update', '-u', action='store_true',
                         help="Check the dhcp server for new connections and update the database.")

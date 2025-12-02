@@ -1,7 +1,8 @@
 [project]
 name = 'routermonitor'
-version = '4.0b3'
-    # 4.0b3 - Sources and Mode switch.  Deleted dd-wrt support
+version = '4.0b4'
+    # 4.0b4 - Doc work, code tuning, search --list-dhcp-server, MIMAPI blank hostname bug, capture device
+    # 4.0b3 - Sources and Mode switch.  Deleted dd-wrt support.  Cleanup
     # 4.0b2 - cleanup
     # 4.0b1 - pfSense+ Nexus MIM contoller API, pfSense_pagescrape, pfSense_unofficialV2 modes functional
     # 3.1.1 - pyproject.toml tuning
