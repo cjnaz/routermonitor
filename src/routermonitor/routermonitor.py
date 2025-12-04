@@ -98,9 +98,12 @@ def main():
 
     # List known clients from dhcp server
     if args.list_dhcp_server:
-        get_dhcp_clients(dump=True, search=args.SearchTerm)
-        cleanup(EXIT_GOOD)
-
+        try:
+            get_dhcp_clients(dump=True, search=args.SearchTerm)
+            cleanup(EXIT_GOOD)
+        except Exception as e:
+            logging.error (f"Error from get_dhcp_clients:\n  {e}")
+            cleanup(EXIT_FAIL)
 
     # Add a note for a client to the database
     if args.note is not None:
@@ -453,16 +456,17 @@ def get_database_clients(dump=False, search=''):
 #=====================================================================================
 
 def get_dhcp_clients(dump=False, search=''):
-    """ Get leases from the dhcp server, return sorted dictionary of dictionaries keyed by MAC
+    """ Get leases from the dhcp server, return sorted dictionary of dictionaries, keyed by MAC
         {
-            MAC:  { hostname:<str>, IP:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, ['device':device] }
+            MAC:  { hostname:<str>, ip:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, 'device':device }
         }
 
-    The 'device' field is returned only for the MIM API, where several devices may be queried.
+    'device' is the pfSense url in Unofficial_APIV2 and Page_Scrape mode, and is the controller managed device that 
+    provided the lease in MIM_API mode.
         
     dump = True forces a pretty print output of the clients_list dictionary.  sort-by and search term supported.
-        
-    Exceptions are logged and raised to caller.  TODO True?
+
+    Transient exceptions are logged and raised to caller.  Hard errors cause script to abort.
     """
     global sort_by
 
@@ -470,16 +474,16 @@ def get_dhcp_clients(dump=False, search=''):
     sources = config.getcfg('Sources', False)
     if not sources:
         logging.error (f"<Sources> not found in config - Aborting")
-        sys.exit(EXIT_FAIL)
+        cleanup(EXIT_FAIL)
 
     for source in sources:
         source = source.strip()
         if source not in config.sections():
-            logging.error (f"Missing source section <{source}> - Aborting")  # TODO log and raise
+            logging.error (f"Missing source section <{source}> - Aborting")
             cleanup(EXIT_FAIL)
         mode = config.getcfg('Mode', False, section=source)
         if mode == False  or  mode not in ['MIM_API', 'Unofficial_APIV2', 'Page_Scrape']:
-            logging.error (f"Missing or invalid Mode for source <{source}> - Aborting")  # TODO log and raise
+            logging.error (f"Missing or invalid Mode for source <{source}> - Aborting")
             cleanup(EXIT_FAIL)
 
         logging.debug (f"Getting leases for source <{source}>, mode <{mode}>")
@@ -491,11 +495,9 @@ def get_dhcp_clients(dump=False, search=''):
                 _clients_list = get_leases_unofficialV2_api(source)
 
             else: # mode == 'Page_Scrape':
-                _clients_list = scrape_pfsense_dhcp_page(source)
-
-        except Exception as e:
-            logging.error (f"Error while getting clients_list for Source <{source}> - Aborting\n  {type(e).__name__}:  {e}")  # TODO log and raise
-            cleanup(EXIT_FAIL)
+                _clients_list = get_leases_page_scrape(source)
+        except:
+            raise
 
         clients_list.update(_clients_list)
 
@@ -520,7 +522,6 @@ def get_dhcp_clients(dump=False, search=''):
         print(f"{'hostname':<{hostname_field_width}}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'device':<{device_field_width}}  {'mac':<17}(Sorted by <{sort_by}>)")
 
         for mac in clients_list:
-            # count += 1
             last_seen = ''              if clients_list[mac]['last_seen'] == 0  else  str(datetime.datetime.fromtimestamp(int(clients_list[mac]['last_seen'])))
             expiry =    'static lease'  if clients_list[mac]['expiry'] == 0     else  str(datetime.datetime.fromtimestamp(int(clients_list[mac]['expiry'])))
 
@@ -560,120 +561,110 @@ def extract_url(url):
 #=====================================================================================
 
 def get_leases_MIM_api(source):
-    """Queries the pfSense+ multi-instance management (MIM) "Controller" API get_dhcp_leases
+    """Query the pfSense+ multi-instance management (MIM) "Controller" API get_dhcp_leases
 
-    The returned DHCP clients list contains the merged list of clients from all `DEVICES`, with
-    just one entry for each MAC.    TODO retain latest last_seen and on which device
+    Return a merged dictionary of dictionaries of all found DHCP clients across all DEVICES, key MAC:
 
-    TODO add typical API response structure
+        {
+            MAC:  { hostname:<str>, ip:<str>, last_seen:<timestamp>, expiry:<timestamp>, 'device':device }
+        }
  
-    ### Config params:
+    `last_seen` is the time that the lease was most recently renewed ('cltt' - client last transmission time)
 
-    `Mode` (str)
-    - 'MIM_API' for this operational mode
+    `expiry` is the lease 'end' time
 
-    `CONTROLLER_URL` (str)
-    - URL of the pfsense device serving the MIM API, eg https://pfsense.mylan:8443
+    If config DEVICES = 'all' (case insensitive), the all devices managed by the controller are queried.
 
-    `DEVICES` (str or list, default ['localhost'])
-    - Typically a list of pfSense+ devices managed by the `CONTROLLER_URL`
-    - if 'all' (case insensitive) then the list of managed devices is fetched from the `CONTROLLER_URL`
+    Transient exceptions are raised to caller.  Hard errors are logged and cause script to abort.
 
-    `CERT_PATH` (str)
-    - Path to the certificate file downloaded from the `CONTROLLER_URL` GUI System > Certificates > Certificates > Export Certificate
-    - Set to False to disable cert verification
-
-    `USER` (str)
-    - username of admin privileged user
-    - Should be imported from a user-read-only credentials file
-
-    `PASS` (str)
-    - password for `USER`
-    - Should be imported from a user-read-only credentials file
-
-    ### Returns
-    - A dictionary of dictionaries.  The top level dictionary is the MAC addresses of the found clients.  
-    - Each client dictionary contains:
-        {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device}
-
-      - 'last_seen' is the when the lease was last renewed
-      - 'device' is the pfSense device that issued the lease (TODO save latest info across all devices)
+    TODO save latest info across all devices)
     """
-    from pfapi import Client, AuthenticatedClient
-
-    controller_url =    config.getcfg('CONTROLLER_URL', section=source)
-    devices =           config.getcfg('DEVICES', ['localhost'], section=source, types=[str, list])
-    user =              config.getcfg('USER', section=source)
-    password =          config.getcfg('PASS', section=source)
-    cert_path =         config.getcfg('CERT_PATH', False, section=source)
-
-    client = Client(base_url=controller_url+'/api',
-                    verify_ssl=cert_path,
-                    headers={'Content-Type': 'application/json'})
-
-    _username = base64.b64encode(user.encode('utf-8')).decode('utf-8')
-    _password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
-    loginCred = LoginCredentials(username=_username, password=_password)
-    resp = login.sync(client=client, body=loginCred)
-
-    # Successful login will return a token in LoginReponse; keep it to create Authenticated client
-    if not isinstance(resp, LoginResponse):
-        raise ValueError (f"Login failed:  {resp}")
-
-    token = resp.token
-    sessInfo = json.loads(base64.b64decode(token.split('.')[1].encode('utf-8') + b'==').decode('utf-8'))
-    # expires = time.localtime(sessInfo['exp'])
-
-    # Must call refresh_access_token to continue to access API
-    # Cookie jar contains the 24-hour refresh token, which is used to refresh the session access token (via API: /login/refresh)
-    cookies = client.get_httpx_client().cookies
-
-    # Create an authenticated client, which will send the bearer (access) token for all API requests to the controller
-    client = AuthenticatedClient(base_url=controller_url+'/api',
-                    verify_ssl=cert_path,
-                    headers={'Content-Type': 'application/json'},
-                    cookies=cookies,
-                    token=token)
-
-    # if DEVICES = 'all', build list of devices from controller
-    if isinstance(devices, str)  and  devices.lower() == 'all':
-        devices = []
-        resp = get_controlled_devices.sync(client=client)
-        for dev in resp.devices:
-            logging.debug (f"{dev.name}, device_id: {dev.device_id}, state: {dev.state}") #, Product version: {device.product_version}")
-            if dev.auth:
-                logging.debug(f"VPN address: {dev.auth.vpn_address}")
-            if dev.state != 'online':
-                logging.info(f"Device <{dev.device_id}> is offline, skipping...")
-                continue
-            devices.append(dev.device_id)
-        logging.debug (f"All devices: <{devices}>")
 
 
-    lease_dict = {}
-    for device in devices:
-        devApi = AuthenticatedClient(base_url=controller_url+f'/api/device/pfsense/{device}/api',
-                    verify_ssl=cert_path,
-                    headers={'Content-Type': 'application/json'},
-                    cookies=cookies,
-                    token=token)
+    try:
+        from pfapi import Client, AuthenticatedClient
 
-        device_name = extract_url(controller_url)  if device == 'localhost'  else device
+        controller_url =    config.getcfg('Controller_URL', section=source)
+        devices =           config.getcfg('Devices', 'All', section=source, types=[str, list])
+        username =          config.getcfg('Username', section=source)
+        password =          config.getcfg('Password', section=source)
+        cert_path =         config.getcfg('Cert_path', False, section=source)
+        timeout =           timevalue(config.getcfg('Timeout', '5s', section=source)).seconds
+    except Exception as e:
+        logging.error (f"Config error - Aborting\n  {e}")
+        cleanup (EXIT_FAIL)
 
-        # Get leases
-        leases = get_dhcp_leases.sync(client=devApi).to_dict()
-        if not 'v4leases' in leases:
-            raise ValueError ("Leases read failed - v4leases not found in server response - Aborting")
+    try:
+        client = Client(base_url=controller_url+'/api',
+                        verify_ssl=cert_path, timeout=timeout,
+                        headers={'Content-Type': 'application/json'})
 
-        for item in leases['v4leases']:
-            last_seen_timestamp =   datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()
-            expiry_timestamp =      datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()
-            mac =                   item['mac']
+        _username = base64.b64encode(username.encode('utf-8')).decode('utf-8')
+        _password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
+        loginCred = LoginCredentials(username=_username, password=_password)
+        resp = login.sync(client=client, body=loginCred)
 
-            lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
-            logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
+        # Successful login will return a token in LoginReponse; keep it to create Authenticated client
+        if not isinstance(resp, LoginResponse):
+            raise ConnectionError (f"Login failed:  {resp}")
 
-    return lease_dict
+        token = resp.token
+        sessInfo = json.loads(base64.b64decode(token.split('.')[1].encode('utf-8') + b'==').decode('utf-8'))
+        # expires = time.localtime(sessInfo['exp'])
+
+        # Must call refresh_access_token to continue to access API
+        # Cookie jar contains the 24-hour refresh token, which is used to refresh the session access token (via API: /login/refresh)
+        cookies = client.get_httpx_client().cookies
+
+        # Create an authenticated client, which will send the bearer (access) token for all API requests to the controller
+        client = AuthenticatedClient(base_url=controller_url+'/api',
+                        verify_ssl=cert_path, timeout=timeout,
+                        headers={'Content-Type': 'application/json'},
+                        cookies=cookies,
+                        token=token)
+
+        # if DEVICES = 'all', build list of devices from controller
+        if isinstance(devices, str)  and  devices.lower() == 'all':
+            devices = []
+            resp = get_controlled_devices.sync(client=client)
+            for dev in resp.devices:
+                logging.debug (f"{dev.name}, device_id: {dev.device_id}, state: {dev.state}") #, Product version: {device.product_version}")
+                if dev.auth:
+                    logging.debug(f"VPN address: {dev.auth.vpn_address}")
+                if dev.state != 'online':
+                    logging.info(f"Device <{dev.device_id}> is offline, skipping...")
+                    continue
+                devices.append(dev.device_id)
+            logging.debug (f"All devices: <{devices}>")
+
+
+        lease_dict = {}
+        for device in devices:
+            devApi = AuthenticatedClient(base_url=controller_url+f'/api/device/pfsense/{device}/api',
+                        verify_ssl=cert_path, timeout=timeout,
+                        headers={'Content-Type': 'application/json'},
+                        cookies=cookies,
+                        token=token)
+
+            device_name = extract_url(controller_url)  if device == 'localhost'  else device
+
+            # Get leases
+            leases = get_dhcp_leases.sync(client=devApi).to_dict()
+            if not 'v4leases' in leases:
+                raise ConnectionError (f"Leases read failed - v4leases not found in server <{device_name}> response")
+
+            for item in leases['v4leases']:
+                last_seen_timestamp =   datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()
+                expiry_timestamp =      datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()
+                mac =                   item['mac']
+
+                lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
+                logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
+
+        return lease_dict
+
+    except Exception as e:
+        raise
 
 
 #=====================================================================================
@@ -682,58 +673,122 @@ def get_leases_MIM_api(source):
 #=====================================================================================
 #=====================================================================================
 
-def get_leases_unofficialV2_api(source): # device='localhost'):
-    """Queries the pfSense Unofficial V2 status/dhcp_server/leases of the specified device (appliance/host)
+def get_leases_unofficialV2_api(source):
+    """Queries the pfSense Unofficial REST API V2 status/dhcp_server/leases of the specified device (appliance/host)
 
-    Typical api response:
-        {'id': 0, 'ip': '192.168.1.90', 'mac': '12:34:56:78:90:ab', 'hostname': 'Template', 'if': 'lan', 'starts': '', 'ends': '', 'active_status': 'static', 'online_status': 'idle/offline', 'descr': 'Template <staticmap> entry'}
-        ...
-        {'id': 5, 'ip': '192.168.1.100', 'mac': '70:88:6b:86:aa:bb', 'hostname': 'somehost', 'if': None, 'starts': '2025/11/28 18:15:41', 'ends': '2025/11/28 20:15:41', 'active_status': 'active', 'online_status': 'active/online', 'descr': None}
+    Only 'Key' auth_method is currently supported.
+
+    Return a dictionary of dictionaries of all found DHCP clients, keyed by MAC:
+
+        {
+            MAC:  { hostname:<str>, ip:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, 'device':device }
+        }
+ 
+    `last_seen` and `expiry` are set to 0 for static mapped hosts (real data not available).
+
+    Transient exceptions are raised to caller.  Hard errors are logged and cause script to abort.
     """
 
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        url =           config.getcfg('URL', section=source)
+        cert_path =     False # config.getcfg('Cert_path', False, section=source)
+        device_name =   extract_url(url)
+        auth_method =   config.getcfg('Auth_method', 'Key', section=source)
+        if auth_method == 'Key':
+            api_key =   config.getcfg('API_key', section=source)
+        else:
+            logging.error (f"Unsupported auth_method <{auth_method}> - Aborting")
+            cleanup (EXIT_FAIL)
 
-    url =           config.getcfg('URL', section=source)
-    api_key =       config.getcfg('API_KEY', section=source)
-    device_name =   extract_url(url)
+    except Exception as e:
+        logging.error (f"Config error - Aborting\n  {e}")
+        cleanup (EXIT_FAIL)
 
-    headers = {
-        'X-API-KEY': api_key,
-        'Accept': 'application/json'
-        }
+    try:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    resp = requests.get(f'{url}/api/v2/status/dhcp_server/leases',
+        session = requests.Session()
+
+        # if auth_method == 'Local_db':
+        #     user =      config.getcfg('USER', section=source)
+        #     password =  config.getcfg('PASS', section=source)
+        #     payload = {'username': user, 'password': password}
+        #     print (payload)
+
+
+        # if auth_method == 'JWT':
+        #     user =      config.getcfg('USER', section=source)
+        #     password =  config.getcfg('PASS', section=source)
+        #     payload = {'username': user, 'password': password}
+
+        #     resp = session.post (url+'/api/v2/auth/jwt',
+        #                 json=payload,
+        #                 verify=cert_path)
+        #     resp.raise_for_status()
+        #     token = resp.json()['data']['token']
+        #     print (token)
+        #     session.headers['Authorization'] = f'Bearer {token}'
+        #     resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
+        #                 json=payload,
+        #                 verify=cert_path)  # Or path to CA cert
+
+
+        if auth_method == 'Key':
+            headers = {
+                'X-API-KEY': api_key,
+                'Accept': 'application/json'
+                }
+            resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
                         headers=headers,
-                        verify=False)  # Or path to CA cert  TODO
+                        verify=cert_path)
 
-    resp.raise_for_status()
-    leases = resp.json().get('data', [])
+        resp.raise_for_status()
+        leases = resp.json().get('data', [])
 
-    if len(leases) == 0:
-        raise ValueError ("No leases found on the server")
+        if len(leases) == 0:
+            raise ValueError ("No leases found on the server")
 
-    lease_dict = {}
-    for item in leases:
-        last_seen_timestamp =   datetime.datetime.strptime(item['starts'],      '%Y/%m/%d %H:%M:%S').timestamp()  if item['starts']  else 0
-        expiry_timestamp =      datetime.datetime.strptime(item['ends'],        '%Y/%m/%d %H:%M:%S').timestamp()  if item['ends']    else 0
-        mac =                   item['mac']
-        lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
-        logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
 
-    return lease_dict
+        lease_dict = {}
+        for item in leases:
+            last_seen_timestamp =   datetime.datetime.strptime(item['starts'],      '%Y/%m/%d %H:%M:%S').timestamp()  if item['starts']  else 0
+            expiry_timestamp =      datetime.datetime.strptime(item['ends'],        '%Y/%m/%d %H:%M:%S').timestamp()  if item['ends']    else 0
+            mac =                   item['mac']
+            lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
+            logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
+
+        return lease_dict
+
+    except Exception as e:
+        raise
+
 
 
 #=====================================================================================
 #=====================================================================================
-#   s c r a p e _ p f s e n s e _ d h c p _ p a g e
+#   g e t _ l e a s e s _ p a g e _ s c r a p e
 #=====================================================================================
 #=====================================================================================
 
-def scrape_pfsense_dhcp_page(source):
-    """Queries the pfSense Plus 25.07.1 RELEASE / pfSense CE 2.8.0 Status > DHCP Leases page and returns a list of dictionaries, 
-    one dict for each table row.
+def get_leases_page_scrape(source):
+    """Queries the pfSense Plus 25.07.1 RELEASE / pfSense CE 2.8.0 Status > DHCP Leases page
 
+    Return a dictionary of dictionaries of all found DHCP clients, keyed by MAC:
+
+        {
+            MAC:  { hostname:<str>, ip:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, 'device':device }
+        }
+ 
+    `last_seen` and `expiry` are set to 0 for static mapped hosts (real data not available).
+
+    Transient exceptions are raised to caller.  Hard errors are logged and cause script to abort.
+    """
+
+    """
+    ==================================================
     Given Status > DHCP Leases page (25.07.1 RELEASE):
+    ==================================================
+
     <div class="panel panel-default">
         <div class="panel-heading"><h2 class="panel-title">Leases</h2></div>
         <div class="panel-body table-responsive">
@@ -770,58 +825,41 @@ def scrape_pfsense_dhcp_page(source):
                     </tr>
     """
 
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-    s = requests.session()
-    s.verify = False
-    # s.verify = config.getcfg('PF_PUBCERT_PATH', False)
-    # print (s.verify)
-    # public_cert_path = config.getcfg('PF_PUBCERT_PATH', False)
-    # priv_key_path = config.getcfg('PF_PRIVKEY_PATH', False)
-
-    # xx = (public_cert_path, priv_key_path)  if public_cert_path  else None
-
-    url =               config.getcfg('URL', section=source)
-    login_page =        url + '/index.php'
-    dhcpleases_page =   url + '/status_dhcp_leases.php'
-    page_timeout =      timevalue(config.getcfg('Page_timeout', '10s', section=source)).seconds
-    user =              config.getcfg('USER', section=source)
-    password =          config.getcfg('PASS', section=source)
-    device_name =       extract_url(url)
     try:
-        # r = s.get(url, verify=True, cert=xx)
-        # r = s.get(url, verify=False)
-        r = s.get(login_page, timeout=page_timeout)                 # Bring up login page, get csrf
-        
-        # exit()
-    # except:
-    #     logging.error(f"Error attempting to connect to <{url}>.  url and login credentials valid?")
-    #     raise IOError("Could not read DHCP clients from the pfsense router")
-    #     # sys.exit(EXIT_FAIL)
+        url =               config.getcfg('URL', section=source)
+        login_page =        url + '/index.php'
+        dhcpleases_page =   url + '/status_dhcp_leases.php'
+        timeout =           timevalue(config.getcfg('Timeout', '10s', section=source)).seconds
+        username =          config.getcfg('Username', section=source)
+        password =          config.getcfg('Password', section=source)
+        device_name =       extract_url(url)
+    except Exception as e:
+        logging.error (f"Config error - Aborting\n  {e}")
+        cleanup (EXIT_FAIL)
 
-    # try:
+    try:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        session = requests.Session()
+        session.verify = False
+        resp = session.get(login_page, timeout=timeout)                 # Bring up login page, get csrf
         matchme = 'csrfMagicToken = "(.*)";var'
-        csrf = re.search(matchme,str(r.text))
-        payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : user, 'passwordfld' : password}
-        # r = s.post(url,data=payload,verify = cert_path)
-        # r = s.get(url,verify = cert_path)
-        r = s.post(login_page, data=payload, timeout=page_timeout)  # login
-        r = s.get (dhcpleases_page, timeout=page_timeout)           # get DHCP leases page
-
+        csrf = re.search(matchme,str(resp.text))
+        payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : username, 'passwordfld' : password}
+        resp = session.post(login_page, data=payload, timeout=timeout)  # login
+        resp = session.get (dhcpleases_page, timeout=timeout)           # get DHCP leases page
 
         # Find the <h2 class="panel-title"> with text "Leases", then up to the surrounding panel
-        tree = _html.fromstring(r.content)
+        tree = _html.fromstring(resp.content)
         column_names = []
         none_index = 0
         leases_panel = tree.xpath('//h2[@class="panel-title" and text()="Leases"]/ancestor::div[contains(@class,"panel")]')
 
         if not leases_panel:
-            raise ValueError ("Failed reading Status > DHCP Leases page")
-
+            raise ConnectionError ("Failed reading Status > DHCP Leases page")
 
         # Index to the table inside this panel
         table = leases_panel[0].xpath('.//table')[0]
-
 
         # Build list of column names
         column_names = []
@@ -837,7 +875,6 @@ def scrape_pfsense_dhcp_page(source):
         logging.debug (f"Column names: <{column_names}>")
 
 
-        # Extract rows
         lease_dict = {}
         for tr in table.xpath('.//tbody/tr'):
             row_dict = {}
@@ -848,19 +885,15 @@ def scrape_pfsense_dhcp_page(source):
             last_seen_timestamp = 0  if row_dict['Start'] == 'n/a'  else  datetime.datetime.strptime(row_dict['Start'], '%Y/%m/%d %H:%M:%S').timestamp()
             expiry_timestamp =    0  if row_dict['End'] == 'n/a'    else  datetime.datetime.strptime(row_dict['End'],   '%Y/%m/%d %H:%M:%S').timestamp()
 
-            # logging.debug (f"mac {row_dict['MAC Address']}, 'IP':{row_dict['IP Address']}, hostname':{row_dict['Hostname']}, 'last_seen':{last_seen_timestamp}, 'expiry':{expiry_timestamp}")
             mac = row_dict['MAC Address']
 
             lease_dict[mac] = {'ip':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
             logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
-            # lease_dict[row_dict['MAC Address']] = {'IP':row_dict['IP Address'], 'hostname':row_dict['Hostname'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp}
-            # logging.debug (f"<{row_dict['MAC Address']}>:  <{lease_dict[row_dict['MAC Address']]}>")
 
         return lease_dict
 
     except Exception as e:
-        logging.error(f"Failed to connect to or get DHCP data from <{url}>.\n  {type(e).__name__}:  {e}")
-        raise ConnectionError("pfsense router access error")
+        raise
 
 
 #=====================================================================================
