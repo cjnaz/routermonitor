@@ -1,7 +1,7 @@
 [project]
 name = 'routermonitor'
 version = '4.0b5'
-    # 4.0b5 - Capture latest host instance, auth methods
+    # 4.0b5 - Scrubbed param names, scrubbed abort/raise for get_dhcp_clients
     # 4.0b4 - Doc work, code tuning, search --list-dhcp-server, MIMAPI blank hostname bug, capture device
     # 4.0b3 - Sources and Mode switch.  Deleted dd-wrt support.  Cleanup
     # 4.0b2 - cleanup
