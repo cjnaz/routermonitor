@@ -2,22 +2,20 @@
 """Monitor for new devices/clients on the network.
 
 The network dhcp server is queried for currently known DHCP clients.
-Any new clients are identified and a notification is sent.  
+Any new client is identified and a notification is sent.  
 """
 
 #==========================================================
 #
-#  Chris Nelson, 2020 - 2024
+#  Chris Nelson, 2020 - 2025
 #
 #==========================================================
 
 import argparse
-import subprocess
 import sys
 import re
 import time
 import datetime
-import os.path
 import collections
 # import html       # Needed for alternate MACOUI lookup implementation
 import sqlite3
@@ -27,34 +25,7 @@ import signal
 import base64
 import json
 from lxml import html as _html
-from pathlib import Path
-
-#
-# Controller APIs
-#
-from pfapi.models import *
-from pfapi.api.login import login, refresh_access_token
-from pfapi.types import Response
-
-from pfapi.api.mim import get_controlled_devices
-from pfapi import Client, AuthenticatedClient
-
-#
-# Per-device api
-#
-# from pfapi.api.system import get_status, get_system_update_info
-# from pfapi.api.aliases import firewall_get_aliases
-from pfapi.api.services import get_dhcp_leases
-
-try:
-    import importlib.metadata
-    __version__ = importlib.metadata.version(__package__ or __name__)
-except:
-    try:
-        import importlib_metadata
-        __version__ = importlib_metadata.version(__package__ or __name__)
-    except:
-        __version__ = "3.1 X"
+import importlib.metadata
 
 from cjnfuncs.core import logging, set_toolname, set_logging_level
 from cjnfuncs.configman import config_item
@@ -64,6 +35,7 @@ from cjnfuncs.deployfiles import deploy_files
 from cjnfuncs.SMTP import snd_notif
 import cjnfuncs.core as core
 
+__version__ = importlib.metadata.version(__package__ or __name__)
 
 
 # Configs / Constants
@@ -85,13 +57,13 @@ DEFAULT_SORT_MODE   = 'hostname'   # If not specified in config file or command 
 def main():
 
     if args.verbose in [1, 2]:
-        set_logging_level (['not possible', logging.INFO, logging.DEBUG][args.verbose], save=False)
+        set_logging_level (['not possible', logging.INFO, logging.DEBUG][args.verbose])
 
-    # logging.getLogger().setLevel(20)  # Set INFO level (20) for interactive use.  Set to 10 for debugging.
     db_connect()
 
+
     # List known clients from database
-    if args.list_db: # or args.SearchTerm != None:
+    if args.list_db:
         get_database_clients(dump=True, search=args.SearchTerm)
         cleanup(EXIT_GOOD)
 
@@ -102,8 +74,10 @@ def main():
             get_dhcp_clients(dump=True, search=args.SearchTerm)
             cleanup(EXIT_GOOD)
         except Exception as e:
+            # logging.exception (f"Error from get_dhcp_clients:\n  {e}")    # for debug
             logging.error (f"Error from get_dhcp_clients:\n  {e}")
             cleanup(EXIT_FAIL)
+
 
     # Add a note for a client to the database
     if args.note is not None:
@@ -151,6 +125,7 @@ def main():
         do_update()
         cleanup(EXIT_GOOD)
 
+    # Shouldn't be able to get here
     logging.error ("Nothing to do.  Use one of --list-db, --list-dhcp-server, --update, --add-note, --delete, or --create-db.")
     cleanup(EXIT_FAIL)
 
@@ -185,9 +160,9 @@ def db_connect():
     """ Check for database access and populate if not existing """
     global db_connection, db_cursor
 
-    mungePath(core.tool.data_dir, mkdir=True)    # Force make the data_dir
-    _fp = str(mungePath(config.getcfg('DB_File'), core.tool.data_dir).full_path)
-    db_connection = sqlite3.connect(_fp)    # _fp must be str on Python 3.6.8
+    mungePath(core.tool.data_dir, mkdir=True)
+    _fp = mungePath(config.getcfg('DB_File'), core.tool.data_dir).full_path
+    db_connection = sqlite3.connect(_fp)
     db_connection.row_factory = sqlite3.Row
     db_cursor = db_connection.cursor()
     found = False
@@ -297,16 +272,6 @@ def db_add_client(MAC, record):
         record['ip'],
         record['expiry'],
         record['device'])
-    # cmd = "INSERT INTO {} (MAC, MACOUI, hostname, notes, first_seen, last_seen, IP, expiry) VALUES (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\', {}, \'{}\', {})".format(
-    #     config.getcfg('DB_Table'),
-    #     MAC,
-    #     macoui,
-    #     record['hostname'],
-    #     '-',
-    #     int(time.time()),
-    #     record['last_seen'],
-    #     record['ip'],
-    #     record['expiry'])
     db_cursor.execute(cmd)
     return macoui
 
@@ -317,11 +282,10 @@ def db_add_client(MAC, record):
 #=====================================================================================
 #=====================================================================================
 
-MAC_LOOKUP_RATE = 0.75
+MAC_LOOKUP_RATE = 0.75      # Lookups limited to 2 per seconds without a macvendors.com account
 next_lookup = time.time()
 def lookup_MAC(MAC):
     """ Given MAC 00:05:cd:8a:22:33, get OUI from https://api.macvendors.com/00:05:cd
-    Lookups limited to 2 per seconds without a macvendors.com account
     
     macvendors.com returns:
       200:  found macoui
@@ -386,8 +350,10 @@ def lookup_MAC(MAC):
 def get_database_clients(dump=False, search=''):
     """ Get clients currently in the database, return a dictionary of dictionaries, keyed by MAC
         {
-            MAC:  { hostname:<>, IP<>:, expiry<>:, first_seen<>:, notes<>:, macoui<>:, device<>: }
+            MAC:  { hostname:<>, IP:<>, expiry:<>, first_seen:<>, notes:<>, macoui:<>, device:<> }
         }
+
+        dump = True forces a pretty print output of the clients_list dictionary.  sort-by and search term supported.
     """
     global sort_by
 
@@ -420,8 +386,6 @@ def get_database_clients(dump=False, search=''):
 
         print(f"{'hostname':<{hostname_field_width}}  {'first_seen':<19}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'device':<{device_field_width}}  "
             + f"{'mac':<17}  {'macoui':<{macoui_field_width}}  {'notes'}    (Sorted by <{sort_by}>)")
-        # print(f"{'hostname':<{hostname_field_width}}  {'first_seen':<19}  {'last_seen':<19}  {'ip':<15}  {'expiry':<19}  {'mac':<17}  "
-        #     + f"{'macoui':<{config.getcfg('macoui_field_width', 30)}}  {'notes'}    (Sorted by <{sort_by}>)")
 
         for mac in clients_list:
             first_seen =    str(datetime.datetime.fromtimestamp(int(clients_list[mac]['first_seen'])))
@@ -463,7 +427,7 @@ def get_dhcp_clients(dump=False, search=''):
 
     'device' is the pfSense url in Unofficial_APIV2 and Page_Scrape mode, and is the controller managed device that 
     provided the lease in MIM_API mode.
-        
+
     dump = True forces a pretty print output of the clients_list dictionary.  sort-by and search term supported.
 
     Transient exceptions are logged and raised to caller.  Hard errors cause script to abort.
@@ -499,7 +463,7 @@ def get_dhcp_clients(dump=False, search=''):
         except:
             raise
 
-        clients_list.update(_clients_list)
+        clients_list = merge_clients_dict(clients_list, _clients_list)
 
 
     if dump:
@@ -554,12 +518,65 @@ def extract_url(url):
     return url
 
 
+def merge_clients_dict (prior_dict, new_dict):
+    """Merge leases in new_dict into prior_dict.  Returns merged_dict.
+
+    prior_dict, new_dict, and the returned merged_dict are all this shape:
+        {
+            MAC:  { hostname:<str>, ip:<str>, last_seen:<timestamp or 0>, expiry:<timestamp or 0>, 'device':device }
+        }
+
+    Capture
+        latest last_seen, expiry, and on which device these were found
+            Note: last_seen and expiry for static mapped hosts are only valid on MIM API.
+        ip address change
+        non-blank hostname
+            Note: MIM API hostnames are lower case, while others are mixed case.  The captured hostname will be the
+            the last source in the sources list.
+        'device' will be the first device in the sources list where the mac is found if times and ip are unchanged,
+            else `device` will be the last device in the sources list where changes were found.
+    """
+
+    # To enable debug logging of the lease merge operation set param 'merge_logger' to 10 in the config file.
+    set_logging_level(config.getcfg('merge_logger', logging.WARNING), 'merge_logger')
+    merge_logger = logging.getLogger('merge_logger')
+
+    merged_dict = {}
+    merged_dict.update(prior_dict)
+
+    for mac_key in new_dict:
+        if mac_key not in merged_dict:
+            merged_dict[mac_key] = new_dict[mac_key]
+            merge_logger.debug (f"Using new  copy for mac <{mac_key}>")
+            continue
+
+        if new_dict[mac_key]['hostname'] != '':
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <hostname>   from <{merged_dict[mac_key]['hostname']}>  to  <{new_dict[mac_key]['hostname']}>")
+            merged_dict[mac_key]['hostname'] =  new_dict[mac_key]['hostname']
+
+        if new_dict[mac_key]['ip'] != merged_dict[mac_key]['ip']:
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <ip>         from <{merged_dict[mac_key]['ip']}>  to  <{new_dict[mac_key]['ip']}>")
+            merged_dict[mac_key]['ip'] =        new_dict[mac_key]['ip']
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <device>     from <{merged_dict[mac_key]['device']}>  to  <{new_dict[mac_key]['device']}>")
+            merged_dict[mac_key]['device'] =    new_dict[mac_key]['device']
+
+        if new_dict[mac_key]['last_seen'] > merged_dict[mac_key]['last_seen']:
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <last_seen>  from <{merged_dict[mac_key]['last_seen']}>  to  <{new_dict[mac_key]['last_seen']}>")
+            merged_dict[mac_key]['last_seen'] = new_dict[mac_key]['last_seen']
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <expiry>     from <{merged_dict[mac_key]['expiry']}>  to  <{new_dict[mac_key]['expiry']}>")
+            merged_dict[mac_key]['expiry'] =    new_dict[mac_key]['expiry']
+            merge_logger.debug (f"For mac <{mac_key}>:  Updated <device>     from <{merged_dict[mac_key]['device']}>  to  <{new_dict[mac_key]['device']}>")
+            merged_dict[mac_key]['device'] =    new_dict[mac_key]['device']
+
+    return merged_dict
+
+
 #=====================================================================================
 #=====================================================================================
 #   g e t _ l e a s e s _ M I M _ a p i
 #=====================================================================================
 #=====================================================================================
-
+        
 def get_leases_MIM_api(source):
     """Query the pfSense+ multi-instance management (MIM) "Controller" API get_dhcp_leases
 
@@ -573,19 +590,22 @@ def get_leases_MIM_api(source):
 
     `expiry` is the lease 'end' time
 
-    If config DEVICES = 'all' (case insensitive), the all devices managed by the controller are queried.
+    If config DEVICES = 'all' (case insensitive, default), then all devices managed by the controller are queried.
 
     Transient exceptions are raised to caller.  Hard errors are logged and cause script to abort.
-
-    TODO save latest info across all devices)
     """
 
+    # MIM Controller APIs
+    import pfapi.models
+    from pfapi.api.login    import login #, refresh_access_token
+    from pfapi.api.mim      import get_controlled_devices
+    from pfapi.api.services import get_dhcp_leases
+    from pfapi import Client, AuthenticatedClient
 
     try:
-        from pfapi import Client, AuthenticatedClient
 
         controller_url =    config.getcfg('Controller_URL', section=source)
-        devices =           config.getcfg('Devices', 'All', section=source, types=[str, list])
+        devices =           config.getcfg('Devices', 'all', section=source, types=[str, list])
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
         cert_path =         config.getcfg('Cert_path', False, section=source)
@@ -601,15 +621,15 @@ def get_leases_MIM_api(source):
 
         _username = base64.b64encode(username.encode('utf-8')).decode('utf-8')
         _password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
-        loginCred = LoginCredentials(username=_username, password=_password)
+        loginCred = pfapi.models.LoginCredentials(username=_username, password=_password)
         resp = login.sync(client=client, body=loginCred)
 
         # Successful login will return a token in LoginReponse; keep it to create Authenticated client
-        if not isinstance(resp, LoginResponse):
+        if not isinstance(resp, pfapi.models.LoginResponse):
             raise ConnectionError (f"Login failed:  {resp}")
 
         token = resp.token
-        sessInfo = json.loads(base64.b64decode(token.split('.')[1].encode('utf-8') + b'==').decode('utf-8'))
+        # sessInfo = json.loads(base64.b64decode(token.split('.')[1].encode('utf-8') + b'==').decode('utf-8'))
         # expires = time.localtime(sessInfo['exp'])
 
         # Must call refresh_access_token to continue to access API
@@ -623,19 +643,19 @@ def get_leases_MIM_api(source):
                         cookies=cookies,
                         token=token)
 
-        # if DEVICES = 'all', build list of devices from controller
+        # if devices = 'all', build list of devices from controller
         if isinstance(devices, str)  and  devices.lower() == 'all':
             devices = []
             resp = get_controlled_devices.sync(client=client)
             for dev in resp.devices:
-                logging.debug (f"{dev.name}, device_id: {dev.device_id}, state: {dev.state}") #, Product version: {device.product_version}")
+                logging.debug (f"{dev.name}, device_id: {dev.device_id}, state: {dev.state}") #, auth: {dev.auth}") 
                 if dev.auth:
                     logging.debug(f"VPN address: {dev.auth.vpn_address}")
                 if dev.state != 'online':
                     logging.info(f"Device <{dev.device_id}> is offline, skipping...")
                     continue
                 devices.append(dev.device_id)
-            logging.debug (f"All devices: <{devices}>")
+            logging.debug (f"All online devices: <{devices}>")
 
 
         lease_dict = {}
@@ -691,7 +711,7 @@ def get_leases_unofficialV2_api(source):
 
     try:
         url =           config.getcfg('URL', section=source)
-        cert_path =     False # config.getcfg('Cert_path', False, section=source)
+        cert_path =     config.getcfg('Cert_path', False, section=source)
         device_name =   extract_url(url)
         auth_method =   config.getcfg('Auth_method', 'Key', section=source)
         if auth_method == 'Key':
@@ -705,42 +725,18 @@ def get_leases_unofficialV2_api(source):
         cleanup (EXIT_FAIL)
 
     try:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        if not cert_path:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
 
-        # if auth_method == 'Local_db':
-        #     user =      config.getcfg('USER', section=source)
-        #     password =  config.getcfg('PASS', section=source)
-        #     payload = {'username': user, 'password': password}
-        #     print (payload)
-
-
-        # if auth_method == 'JWT':
-        #     user =      config.getcfg('USER', section=source)
-        #     password =  config.getcfg('PASS', section=source)
-        #     payload = {'username': user, 'password': password}
-
-        #     resp = session.post (url+'/api/v2/auth/jwt',
-        #                 json=payload,
-        #                 verify=cert_path)
-        #     resp.raise_for_status()
-        #     token = resp.json()['data']['token']
-        #     print (token)
-        #     session.headers['Authorization'] = f'Bearer {token}'
-        #     resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
-        #                 json=payload,
-        #                 verify=cert_path)  # Or path to CA cert
-
-
-        if auth_method == 'Key':
-            headers = {
-                'X-API-KEY': api_key,
-                'Accept': 'application/json'
-                }
-            resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
-                        headers=headers,
-                        verify=cert_path)
+        headers = {
+            'X-API-KEY': api_key,
+            'Accept': 'application/json'
+            }
+        resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
+                    headers=headers,
+                    verify=cert_path)
 
         resp.raise_for_status()
         leases = resp.json().get('data', [])
@@ -761,7 +757,6 @@ def get_leases_unofficialV2_api(source):
 
     except Exception as e:
         raise
-
 
 
 #=====================================================================================
@@ -785,11 +780,10 @@ def get_leases_page_scrape(source):
     """
 
     """
-    ==================================================
-    Given Status > DHCP Leases page (25.07.1 RELEASE):
-    ==================================================
+    Given example  Status > DHCP Leases page (25.07.1 RELEASE):
+    -----------------------------------------------------------
 
-    <div class="panel panel-default">
+        <div class="panel panel-default">
         <div class="panel-heading"><h2 class="panel-title">Leases</h2></div>
         <div class="panel-body table-responsive">
             <table class="table table-striped table-hover table-condensed sortable-theme-bootstrap" data-sortable>
@@ -832,16 +826,18 @@ def get_leases_page_scrape(source):
         timeout =           timevalue(config.getcfg('Timeout', '10s', section=source)).seconds
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
+        cert_path =         config.getcfg('Cert_path', False, section=source)
         device_name =       extract_url(url)
     except Exception as e:
         logging.error (f"Config error - Aborting\n  {e}")
         cleanup (EXIT_FAIL)
 
     try:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        if not cert_path:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
-        session.verify = False
+        session.verify = cert_path
         resp = session.get(login_page, timeout=timeout)                 # Bring up login page, get csrf
         matchme = 'csrfMagicToken = "(.*)";var'
         csrf = re.search(matchme,str(resp.text))
@@ -928,37 +924,37 @@ def cli():
     set_toolname (TOOLNAME)
     parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('SearchTerm', nargs='?', default= '',
-                        help="Print database records containing this text.")
+                        help="Print database records containing this text")
     parser.add_argument('--update', '-u', action='store_true',
-                        help="Check the dhcp server for new connections and update the database.")
+                        help="Check the dhcp server for new connections and update the database")
     parser.add_argument('--list-db', '-l', action='store_true',
-                        help="Print known clients on the network from the database (default mode).")
+                        help="Print known clients on the network from the database (default mode)")
     parser.add_argument('--list-dhcp-server', '-r', action='store_true',
-                        help="Print known clients on the network from the dhcp server.")
+                        help="Print known clients on the network from the dhcp server")
     parser.add_argument('--sort-by', '-s', choices=SORT_MODES,
                         help=f"Sort --list-db and --list-dhcp-server output. Overrides config SortBy. Default <{DEFAULT_SORT_MODE}> if neither specified.")
     parser.add_argument('--create-db', action='store_true',
-                        help="Create a fresh database and populate it with the current dhcp server clients.")
+                        help="Create a fresh database and populate it with the current dhcp server clients")
     parser.add_argument('--note', '-n', type=str,
-                        help="Add a note to the db for the specified --MAC.")
+                        help="Add a note to the db for the specified --MAC")
     parser.add_argument('--delete', action='store_true',
-                        help="Delete from the db the specified --MAC.")
+                        help="Delete from the db the specified --MAC")
     parser.add_argument('--MAC', '-m', type=str,
-                        help="MAC address for --add-note or --delete.")
+                        help="MAC address for --add-note or --delete")
     parser.add_argument('--config-file', '-c', type=str, default=CONFIG_FILE,
-                        help=f"Path to the config file (Default <{CONFIG_FILE})> in user/site config directory.")
+                        help=f"Path to the config file (Default <{CONFIG_FILE})> in user/site config directory")
     parser.add_argument('--print-log', '-p', action='store_true',
-                        help=f"Print the tail end of the log file (default last {PRINTLOGLENGTH} lines).")
+                        help=f"Print the tail end of the log file (default last {PRINTLOGLENGTH} lines)")
     parser.add_argument('--service', action='store_true',
-                        help="Run updates in an endless loop for use as a systemd service.")
+                        help="Run updates in an endless loop for use as a systemd service")
     parser.add_argument('-v', '--verbose', action='count',
                         help="Print status and activity messages (-vv for debug logging)")
     parser.add_argument('--setup-user', action='store_true',
-                        help=f"Install starter files in user space.")
+                        help=f"Install starter files in user space")
     parser.add_argument('--setup-site', action='store_true',
-                        help=f"Install starter files in system-wide space. Run with root prev.")
+                        help=f"Install starter files in system-wide space - run with root prev")
     parser.add_argument('-V', '--version', action='version', version=f'{core.tool.toolname} {__version__}',
-                        help="Return version number and exit.")
+                        help="Return version number and exit")
     args = parser.parse_args()
 
 
