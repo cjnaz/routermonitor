@@ -1,6 +1,7 @@
 [project]
 name = 'routermonitor'
-version = '4.0rc1'
+version = '4.0rc2'
+    # 4.0rc2 - Final cleanup, doc work
     # 4.0rc1 - Capture latest host instance, SSL certificate support
     # 4.0b5 - Scrubbed param names, scrubbed abort/raise for get_dhcp_clients
     # 4.0b4 - Doc work, code tuning, search --list-dhcp-server, MIMAPI blank hostname bug, capture device

@@ -74,8 +74,10 @@ def main():
             get_dhcp_clients(dump=True, search=args.SearchTerm)
             cleanup(EXIT_GOOD)
         except Exception as e:
-            # logging.exception (f"Error from get_dhcp_clients:\n  {e}")    # for debug
-            logging.error (f"Error from get_dhcp_clients:\n  {e}")
+            if config.getcfg('tracelog_getdhcp_failure', False):
+                logging.exception (f"Error from get_dhcp_clients:\n  {e}")    # for debug
+            else:
+                logging.error (f"Error from get_dhcp_clients:\n  {e}")
             cleanup(EXIT_FAIL)
 
 
@@ -608,7 +610,7 @@ def get_leases_MIM_api(source):
         devices =           config.getcfg('Devices', 'all', section=source, types=[str, list])
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
-        cert_path =         config.getcfg('Cert_path', False, section=source)
+        ca_path =           config.getcfg('CA_path', False, section=source)
         timeout =           timevalue(config.getcfg('Timeout', '5s', section=source)).seconds
     except Exception as e:
         logging.error (f"Config error - Aborting\n  {e}")
@@ -616,7 +618,7 @@ def get_leases_MIM_api(source):
 
     try:
         client = Client(base_url=controller_url+'/api',
-                        verify_ssl=cert_path, timeout=timeout,
+                        verify_ssl=ca_path, timeout=timeout,
                         headers={'Content-Type': 'application/json'})
 
         _username = base64.b64encode(username.encode('utf-8')).decode('utf-8')
@@ -638,7 +640,7 @@ def get_leases_MIM_api(source):
 
         # Create an authenticated client, which will send the bearer (access) token for all API requests to the controller
         client = AuthenticatedClient(base_url=controller_url+'/api',
-                        verify_ssl=cert_path, timeout=timeout,
+                        verify_ssl=ca_path, timeout=timeout,
                         headers={'Content-Type': 'application/json'},
                         cookies=cookies,
                         token=token)
@@ -661,7 +663,7 @@ def get_leases_MIM_api(source):
         lease_dict = {}
         for device in devices:
             devApi = AuthenticatedClient(base_url=controller_url+f'/api/device/pfsense/{device}/api',
-                        verify_ssl=cert_path, timeout=timeout,
+                        verify_ssl=ca_path, timeout=timeout,
                         headers={'Content-Type': 'application/json'},
                         cookies=cookies,
                         token=token)
@@ -711,7 +713,7 @@ def get_leases_unofficialV2_api(source):
 
     try:
         url =           config.getcfg('URL', section=source)
-        cert_path =     config.getcfg('Cert_path', False, section=source)
+        ca_path =       config.getcfg('CA_path', False, section=source)
         device_name =   extract_url(url)
         auth_method =   config.getcfg('Auth_method', 'Key', section=source)
         if auth_method == 'Key':
@@ -725,7 +727,7 @@ def get_leases_unofficialV2_api(source):
         cleanup (EXIT_FAIL)
 
     try:
-        if not cert_path:
+        if not ca_path:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
@@ -736,7 +738,7 @@ def get_leases_unofficialV2_api(source):
             }
         resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
                     headers=headers,
-                    verify=cert_path)
+                    verify=ca_path)
 
         resp.raise_for_status()
         leases = resp.json().get('data', [])
@@ -823,21 +825,21 @@ def get_leases_page_scrape(source):
         url =               config.getcfg('URL', section=source)
         login_page =        url + '/index.php'
         dhcpleases_page =   url + '/status_dhcp_leases.php'
-        timeout =           timevalue(config.getcfg('Timeout', '10s', section=source)).seconds
+        timeout =           timevalue(config.getcfg('Timeout', '15s', section=source)).seconds
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
-        cert_path =         config.getcfg('Cert_path', False, section=source)
+        ca_path =           config.getcfg('CA_path', False, section=source)
         device_name =       extract_url(url)
     except Exception as e:
         logging.error (f"Config error - Aborting\n  {e}")
         cleanup (EXIT_FAIL)
 
     try:
-        if not cert_path:
+        if not ca_path:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
-        session.verify = cert_path
+        session.verify = ca_path
         resp = session.get(login_page, timeout=timeout)                 # Bring up login page, get csrf
         matchme = 'csrfMagicToken = "(.*)";var'
         csrf = re.search(matchme,str(resp.text))
