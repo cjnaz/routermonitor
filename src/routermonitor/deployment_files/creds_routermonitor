@@ -1,5 +1,7 @@
-# Credentials for routermonitor 3.0
+# Credentials for routermonitor 4.0
 
-# pfSense DHCP Leases page access params
-PF_USER         username
-PF_PASS         password
+# pfSense access params
+Username        username
+Password        password
+
+# API_key         <key value from GUI>    # if using Mode = Unofficial_APIV2

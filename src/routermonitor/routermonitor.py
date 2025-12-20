@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor for new devices/clients on the network.
+"""Monitor for new clients on the network.
 
 The network dhcp server is queried for currently known DHCP clients.
 Any new client is identified and a notification is sent.  
@@ -21,13 +21,14 @@ import collections
 import sqlite3
 import urllib3
 import requests
+import socket
 import signal
 import base64
 import json
 from lxml import html as _html
 import importlib.metadata
 
-from cjnfuncs.core import logging, set_toolname, set_logging_level
+from cjnfuncs.core import logging, set_toolname, set_logging_level, periodic_log
 from cjnfuncs.configman import config_item
 from cjnfuncs.timevalue import timevalue
 from cjnfuncs.mungePath import mungePath
@@ -74,8 +75,8 @@ def main():
             get_dhcp_clients(dump=True, search=args.SearchTerm)
             cleanup(EXIT_GOOD)
         except Exception as e:
-            if config.getcfg('tracelog_getdhcp_failure', False):
-                logging.exception (f"Error from get_dhcp_clients:\n  {e}")    # for debug
+            if config.getcfg('debug_tracelog_getdhcp_failure', False):
+                logging.exception (f"Error from get_dhcp_clients:\n  {e}")
             else:
                 logging.error (f"Error from get_dhcp_clients:\n  {e}")
             cleanup(EXIT_FAIL)
@@ -248,7 +249,7 @@ def do_update():
 
         db_connection.commit()
     except Exception as e:
-        logging.warning(f"Update failed:\n  {type(e).__name__}:  {e}")
+        periodic_log(f"Update failed:\n  {type(e).__name__}:  {e}", category='dhcp_get_failure', log_interval='6h')
 
 
 #=====================================================================================
@@ -297,7 +298,7 @@ def lookup_MAC(MAC):
 
     global next_lookup
 
-    if config.getcfg('skip_macoui_lookup', False):
+    if config.getcfg('debug_skip_macoui_lookup', False):
         return 'macoui-placeholder'
 
     for _ in range(3):
@@ -539,8 +540,8 @@ def merge_clients_dict (prior_dict, new_dict):
             else `device` will be the last device in the sources list where changes were found.
     """
 
-    # To enable debug logging of the lease merge operation set param 'merge_logger' to 10 in the config file.
-    set_logging_level(config.getcfg('merge_logger', logging.WARNING), 'merge_logger')
+    # To enable debug logging of the lease merge operation set param 'debug_merge_logger' to 10 in the config file.
+    set_logging_level(config.getcfg('debug_merge_logger', logging.WARNING), 'merge_logger')
     merge_logger = logging.getLogger('merge_logger')
 
     merged_dict = {}
@@ -611,6 +612,8 @@ def get_leases_MIM_api(source):
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
         ca_path =           config.getcfg('CA_path', False, section=source)
+        if ca_path != False:
+            ca_path =       mungePath(ca_path, core.tool.config_dir).full_path
         timeout =           timevalue(config.getcfg('Timeout', '5s', section=source)).seconds
     except Exception as e:
         logging.error (f"Config error - Aborting\n  {e}")
@@ -714,6 +717,8 @@ def get_leases_unofficialV2_api(source):
     try:
         url =           config.getcfg('URL', section=source)
         ca_path =       config.getcfg('CA_path', False, section=source)
+        if ca_path != False:
+            ca_path =   mungePath(ca_path, core.tool.config_dir).full_path
         device_name =   extract_url(url)
         auth_method =   config.getcfg('Auth_method', 'Key', section=source)
         if auth_method == 'Key':
@@ -731,14 +736,14 @@ def get_leases_unofficialV2_api(source):
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
+        session.verify = ca_path
 
         headers = {
             'X-API-KEY': api_key,
             'Accept': 'application/json'
             }
         resp = session.get(f'{url}/api/v2/status/dhcp_server/leases',
-                    headers=headers,
-                    verify=ca_path)
+                    headers=headers)
 
         resp.raise_for_status()
         leases = resp.json().get('data', [])
@@ -829,6 +834,8 @@ def get_leases_page_scrape(source):
         username =          config.getcfg('Username', section=source)
         password =          config.getcfg('Password', section=source)
         ca_path =           config.getcfg('CA_path', False, section=source)
+        if ca_path != False:
+            ca_path =       mungePath(ca_path, core.tool.config_dir).full_path
         device_name =       extract_url(url)
     except Exception as e:
         logging.error (f"Config error - Aborting\n  {e}")
@@ -841,9 +848,13 @@ def get_leases_page_scrape(source):
         session = requests.Session()
         session.verify = ca_path
         resp = session.get(login_page, timeout=timeout)                 # Bring up login page, get csrf
+        if bytes("Potential DNS Rebind attack detected", encoding='utf8') in resp.content:
+            raise socket.gaierror (f"'Potential DNS Rebind attack' error with URL <{login_page}>")  # This error returns status 200
+
         matchme = 'csrfMagicToken = "(.*)";var'
         csrf = re.search(matchme,str(resp.text))
         payload = {'__csrf_magic' : csrf.group(1), 'login' : 'Login', 'usernamefld' : username, 'passwordfld' : password}
+
         resp = session.post(login_page, data=payload, timeout=timeout)  # login
         resp = session.get (dhcpleases_page, timeout=timeout)           # get DHCP leases page
 
@@ -924,6 +935,7 @@ def cli():
     global sort_by
 
     set_toolname (TOOLNAME)
+    # print (core.tool)
     parser = argparse.ArgumentParser(description=__doc__ + __version__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('SearchTerm', nargs='?', default= '',
                         help="Print database records containing this text")

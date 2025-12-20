@@ -1,24 +1,24 @@
 # routermonitor
 
-routermonitor logs/monitors DHCP clients (devices) managed by your pfSense DHCPv4 server.
+routermonitor logs/monitors DHCP clients managed by your pfSense DHCPv4 server.
 I use pfSense as my home DHCP server and 
-find that over time that I've accumulated several devices on my network that I cannot readily identify. routermonitor
+find that over time that I've accumulated several clients on my network that I cannot readily identify. routermonitor
 watches the DHCP leases and tracks changes in a sqlite3
-database.  Any new client found on the network result in a text message notification.
+database.  Any new client found on the network results in a text message notification.
 
 - Clients come and go over time, as family members come and visit, and as DHCP leases expire.  The history of 
 known clients is tracked by MAC address.  Clients may be manually deleted from the database (i.e., *That laptop went in the tub with kids!* (long gone)).  No changes are ever made on the dhcp server.
-- Some hostnames are ambiguous, such as '*' and 'android-2ab8700dff69dbfd'.  Notes may be manually added for each tracked client. 
-- The Organization Unique ID for for each devices' MAC address is looked up and added to the database, often providing enough info to identify strange devices.
+- Some hostnames are ambiguous, such as '*' and 'android-2ab8700dff69dbfd', and some devices issue random MAC addresses.  Notes may be manually added for each tracked client. 
+- The Organization Unique ID for for each clients' MAC address is looked up and added to the database, often providing enough info to identify strange clients.
 
 Definition of terms:
-- _device_ refers to a pfSense(+) DHCP server on your network. pfSense devices are also referred to as the _router_ or _dhcp server_ in this documentation
 - _client_ is used in this documentation to refer to a host/client on your network that has requested an IP address via DHCP.
+- _device_ refers to a pfSense(+) DHCP server on your network. pfSense devices are also referred to as the _router_ or _dhcp server_ in this documentation.
 
 Supports
 - Linux and Windows
 - Python 3.9+
-- pfSense+ 25.07.1 and above, and corresponding pfSense CE versions (2.8.0+?)
+- pfSense+ 25.07.1 and above, and corresponding pfSense CE versions (2.8.0+?)  (tested on 25.07.1 and 25.11)
 - pfSense ISC and Kea servers
 - pfSense+ MIM API, UnofficialV2 API, and Status > DHCP Leases page scrape modes
 
@@ -26,7 +26,7 @@ Supports
 
 ---
 
-## Notable changes since prior release V3.1
+## Notable changes since prior release (V3.1)
 
 - Removed support for dd-wrt
 - Updated page scrape mode to be compatible with more recent DHCP Leases page layout - Works with both ISC and Kea DHCP servers.
@@ -45,7 +45,7 @@ usage: routermonitor [-h] [--update] [--list-db] [--list-dhcp-server] [--sort-by
                      [--service] [-v] [--setup-user] [--setup-site] [-V]
                      [SearchTerm]
 
-Monitor for new devices/clients on the network.
+Monitor for new clients on the network.
 
 The network dhcp server is queried for currently known DHCP clients.
 Any new clients are identified and a notification is sent.  
@@ -113,7 +113,7 @@ FireStick4k                2020-05-22 18:23:44  2025-11-30 11:37:04  192.168.1.4
   - `Mode = Unofficial_APIV2` is second best - Fast.  No `last_seen` or `expiry` info available for static mapped clients.
   - `Mode = Page_Scrape` is is completely functional, but slower than the APIs since pfSense logins can be slow.  Matches `Unofficial_APIV2` results
 - Edit/configure `routermonitor.cfg`, `creds_SMTP`, and `creds_routermonitor` as needed.
-- Run `routermonitor` once manually to build the devices/clients database.  It will take a few moments for rate-limited MACOUI lookups.
+- Run `routermonitor` once manually to build the clients database.  It will take a few moments for rate-limited MACOUI lookups.
 - Do `routermonitor --add-note` runs to annotate client info, as desired.  Example: `routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartswitch"`.
 - `routermonitor --list-db` (equivalent to just `routermonitor`) provides a list of all known clients over time.  `--sort-by hostname` may be useful.  The report may be sorted by _mac, hostname, ip, device, first_seen,
 last_seen, expiry, notes, or macoui_.  The default `SortBy` may be set in the config file.
@@ -171,7 +171,7 @@ Setup
 
       pkg-static -C /dev/null add https://github.com/jaredhendrickson13/pfsense-api/releases/latest/download/pfSense-24.11-pkg-RESTAPI.pkg
 
-- To enable the API, briefly, you will need to, at System > REST API > Settings, Enable the API, set Allowed Interfaces, and set up the Authentication Method to `Key`.  On the Keys tab, create a key and save it to the routermonitor config file `API_key`.
+- To enable the API, briefly, you will need to, at System > REST API > Settings, Enable the API, set Allowed Interfaces, and set up the Authentication Method to `Key`.  On the Keys tab, create a key and save the key value to the `creds_routermonitor` config file `API_key` param.
 
 
 Notes and considerations
@@ -207,11 +207,12 @@ Notes and considerations
 Each access mode supports verified SSL access by configuring a certificate authority within pfSense. 
 In short, to set up certificates for use with routermonitor:
 
-  - Create a _self-signed 'CA certificate'_ (System > Certificates > Authorities), then 'Export CA' to a file.  This is the CA public key.  Set the path to this file in the routermonitor config file `CA_path` param.
+  - Create a _self-signed 'CA certificate'_ (System > Certificates > Authorities), then 'Export CA' to a file.  This is the CA public key.  Set the path to this file in the routermonitor config file `CA_path` param.  Note that the directory path to the CA file defaults to `~/.config/routermonitor` - an absolute path or a path relative to ~/.config/routermonitor may be specified.
   - Create a _internally signed 'Server Certificate'_ (System > Certificates > Certificates) that refers to the new CA certificate (thus not a _self-signed server certificate_), with a Common Name (CN) or SAN entry set to the URL being used to access the device by routermonitor.
   - Change the webGUI (webConfigurator) to use the new internally signed server certificate (System > Advanced > Admin Access > SSL/TLS Certificate).
   Once set, the new server certificate will show as in use by the 'webConfigurator'. Delete the original server cert. Your browser may need some nudging at this point.
-  - If applicable, change the MIM API to use the new internally signed server certificate (System > Advanced > Netgate Nexus > TLS Certificate).
+  - If applicable, change the MIM API to use the new internally signed server certificate (System > Advanced > Netgate Nexus > TLS Certificate).  You may need to disable/re-enable
+  Netgate Nexus to propagate the new certificate setup to port 8443.
 
 Use of a CA is optional.  `CA_path` defaults to False if not defined, which disables SSL verification.
 

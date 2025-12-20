@@ -1,6 +1,7 @@
 [project]
 name = 'routermonitor'
-version = '4.0rc2'
+version = '4.0'
+    # 4.0 - periodic log update failures, renamed debug_ switches, raise DNS rebind error, final cleanup, setup files default to ~/.config/routermonitor
     # 4.0rc2 - Final cleanup, doc work
     # 4.0rc1 - Capture latest host instance, SSL certificate support
     # 4.0b5 - Scrubbed param names, scrubbed abort/raise for get_dhcp_clients
