@@ -679,10 +679,10 @@ def get_leases_MIM_api(source):
                 raise ConnectionError (f"Leases read failed - v4leases not found in server <{device_name}> response")
 
             for item in leases['v4leases']:
-                last_seen_timestamp =   datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()
-                expiry_timestamp =      datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()
+                logging.debug (f"\n{item}")
+                last_seen_timestamp =   datetime.datetime.strptime(item['cltt'][0:19],  '%Y-%m-%d %H:%M:%S').timestamp()  if item['cltt']   else 0
+                expiry_timestamp =      datetime.datetime.strptime(item['end'],         '%Y/%m/%d %H:%M:%S').timestamp()  if item['end']    else 0
                 mac =                   item['mac']
-
                 lease_dict[mac] =       {'ip':item['ip'], 'hostname':item['host'], 'last_seen':last_seen_timestamp, 'expiry':expiry_timestamp, 'device':device_name}
                 logging.debug (f"Lease entry:  <{mac}>:  <{lease_dict[mac]}>")
 
@@ -754,6 +754,7 @@ def get_leases_unofficialV2_api(source):
 
         lease_dict = {}
         for item in leases:
+            logging.debug (f"\n{item}")
             last_seen_timestamp =   datetime.datetime.strptime(item['starts'],      '%Y/%m/%d %H:%M:%S').timestamp()  if item['starts']  else 0
             expiry_timestamp =      datetime.datetime.strptime(item['ends'],        '%Y/%m/%d %H:%M:%S').timestamp()  if item['ends']    else 0
             mac =                   item['mac']
@@ -888,6 +889,7 @@ def get_leases_page_scrape(source):
         for tr in table.xpath('.//tbody/tr'):
             row_dict = {}
             _row = [td.text_content().strip() for td in tr.xpath('td')]
+            logging.debug (f"\n{_row}")
             for colname, item in zip(column_names, _row):
                 row_dict[colname] = item
 

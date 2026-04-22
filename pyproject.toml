@@ -1,6 +1,7 @@
 [project]
 name = 'routermonitor'
-version = '4.0'
+version = '4.0.1'
+    # 4.0.1 - Updated for pfSense+ 26.03 - The MIM API now returns static mapped hosts in the same way as the other modes (rather than cltt and end times)
     # 4.0 - periodic log update failures, renamed debug_ switches, raise DNS rebind error, final cleanup, setup files default to ~/.config/routermonitor
     # 4.0rc2 - Final cleanup, doc work
     # 4.0rc1 - Capture latest host instance, SSL certificate support

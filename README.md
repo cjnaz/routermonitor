@@ -18,7 +18,7 @@ Definition of terms:
 Supports
 - Linux and Windows
 - Python 3.9+
-- pfSense+ 25.07.1 and above, and corresponding pfSense CE versions (2.8.0+?)  (tested on 25.07.1 and 25.11)
+- pfSense+ 25.07.1 and above, and corresponding pfSense CE versions (2.8.0+?)  (tested on 25.07.1, 25.11 and 26.03)
 - pfSense ISC and Kea servers
 - pfSense+ MIM API, UnofficialV2 API, and Status > DHCP Leases page scrape modes
 
@@ -26,13 +26,9 @@ Supports
 
 ---
 
-## Notable changes since prior release (V3.1)
+## Notable changes since prior release (V4.0)
 
-- Removed support for dd-wrt
-- Updated page scrape mode to be compatible with more recent DHCP Leases page layout - Works with both ISC and Kea DHCP servers.
-- Added support for the new Nexus multi-instance management (MIM) API
-- Added support for the Unofficial V2 API (https://pfrest.org/)
-- Added support for last_seen (most recently seen) tracking and reporting
+- The pfSense+ MIM API in version 26.03 was changed (defeatured) to now report static leases just like as seen in the GUI:  No info about _cltt_/_start_ (last seen) or _end_ (expiry) times.  (A static lease/reservation is actually the DHCP server simply supplying a fixed IP to a client each time the client asks for a DHCP renew.)  As of this release, routermonitor reports _static lease_ in the expiry column for all three source modes. (I am considering adding a feature to merge data from the kea dhcp4.leases file in a future release.)
 
 <br/>
 
@@ -49,7 +45,7 @@ Monitor for new clients on the network.
 
 The network dhcp server is queried for currently known DHCP clients.
 Any new clients are identified and a notification is sent.  
-4.0
+4.0.1
 
 positional arguments:
   SearchTerm            Print database records containing this text.
@@ -108,10 +104,10 @@ FireStick4k                2020-05-22 18:23:44  2025-11-30 11:37:04  192.168.1.4
 ## Setup and Usage notes
 - Install routermonitor from PyPI (`pip install routermonitor`)
 - Install the initial configuration files (`routermonitor --setup-user` places files at `~/.config/routermonitor`).
-- Decide on which DHCP clients list lookup method you wish to use (see more details below):
-  - `Mode = MIM_API` is the best choice if you are using a Netgate pfSense+ device or have a Plus license - Fast and best information. If using the MIM API you will need to manually install the Netgate pfsense-api (see below).
-  - `Mode = Unofficial_APIV2` is second best - Fast.  No `last_seen` or `expiry` info available for static mapped clients.
-  - `Mode = Page_Scrape` is is completely functional, but slower than the APIs since pfSense logins can be slow.  Matches `Unofficial_APIV2` results
+- Decide on which DHCP clients list lookup method you wish to use (see more details below).  All three modes result in the same content in routermonitor:
+  - `Mode = MIM_API` is the best choice if you are using a Netgate pfSense+ device or have a Plus license - _fast_. If using the MIM API you will need to manually install the Netgate pfsense-api (see below).
+  - `Mode = Unofficial_APIV2` is a solid choice - _also fast_.
+  - `Mode = Page_Scrape` is is completely functional, but slower than the APIs since pfSense logins can be slow.
 - Edit/configure `routermonitor.cfg`, `creds_SMTP`, and `creds_routermonitor` as needed.
 - Run `routermonitor` once manually to build the clients database.  It will take a few moments for rate-limited MACOUI lookups.
 - Do `routermonitor --add-note` runs to annotate client info, as desired.  Example: `routermonitor --MAC 80:7d:3a:48:ce:bf --add-note "Basement lights smartswitch"`.
@@ -153,11 +149,11 @@ Setup
 
 Notes and considerations
 
-1) A key benefit of using the MIM_API mode is that real DHCP lease start and expiry times are available.  In the other modes all statically mapped clients simply show as "static lease".
+1) ~~A key benefit of using the MIM_API mode is that real DHCP lease start and expiry times are available.  In the other modes all statically mapped clients simply show as "static lease".~~
 1) Netgate Nexus and the MIM API were first released on pfSense+ version 25.07. For older pfSense+ versions and the CE version see the Unofficial V2 API.
 1) With the MIM API the `hostname` field comes first from the pfSense+ DHCP static mappings, with fallback to the hostname provided by the client on a DHCP request. The hostname is lower case, as by-spec hostnames are case insensitive.  Windows clients will have a '.' appended to the hostname.
-1) Kea DHCP server only issues and logs IP assignments from clients that actively send a DHCP request (this may be true also for the ISC server).  For static mapped clients, Kea issues the specified fixed address, with a 2 hour lease, meaning that a statically mapped clients must periodically request a new IP (and gets back the fixed assignment).  _The MIM API only reports actually requested/issued IP addresses._ Clients with statically assigned addresses but not on the network wont show up in the list. Therefore, long-story-short, _the MIM API may report a subset of the statically assigned IP addresses/clients._ `routermonitor` accumulates the history of connected clients, so the transient nature of the lease list is not a problem.
-Note that the other update methods (Unofficial_APIV2 and Page_Scrape) show all static mappings.
+1) Kea DHCP server only issues and logs IP assignments from clients that actively send a DHCP request (this may be true also for the ISC server).  For static mapped clients, Kea issues the specified fixed address, with a 2 hour lease, meaning that a statically mapped clients must periodically request a new IP (and gets back the fixed assignment).  ~~_The MIM API only reports actually requested/issued IP addresses._ Clients with statically assigned addresses but not on the network wont show up in the list. Therefore, long-story-short, _the MIM API may report a subset of the statically assigned IP addresses/clients._~~ `routermonitor` accumulates the history of connected clients, ~~so the transient nature of the lease list is not a problem.~~
+Note that ~~the other~~ all update methods (Unofficial_APIV2 and Page_Scrape) show all static mappings.
 1) Netgate Nexus on pfSense+ devices provides the multi-instance management (MIM) API, with specific support for accessing/controlling multiple pfSense+ devices on a network from a single "controller" (the master pfSense+ device).  MIM API accesses have a `device_id` field, which specifies which pfSense+ instance the API request targets.  `routermonitor` supports specifying a series of `Devices` in the config file.  The devices will be accessed in the order listed with all found clients merged into one DHCP clients list.  The default Devices lists is `['localhost']`. If you have a multi-instance network you will need a paid subscription to use Nexus across devices, and then the MIM API can also be used across devices.
 
 <br/>
@@ -167,9 +163,9 @@ Note that the other update methods (Unofficial_APIV2 and Page_Scrape) show all s
 ## Using the Unofficial V2 API (`Mode = Unofficial_APIV2`)
 
 Setup
-- Install the Unofficial V2 API on your pfSense device.  This API works on both Netgate pfSense+ devices (24.11+) and on CE devices (2.8.0+).  See https://pfrest.org/INSTALL_AND_CONFIG/. The install can be done via an SSH login, using the device console, or using the GUI Diagnostics > Command Prompt > Execute Shell Command. Example for pfSense+ 24.11 (_do install the correct version_):
+- Install the Unofficial V2 API on your pfSense device.  This API works on both Netgate pfSense+ devices (24.11+) and on CE devices (2.8.0+).  See https://pfrest.org/INSTALL_AND_CONFIG/. The install can be done via an SSH login, using the device console, or using the GUI Diagnostics > Command Prompt > Execute Shell Command. Example for pfSense+ 26.03 (_do install the correct version_):
 
-      pkg-static -C /dev/null add https://github.com/jaredhendrickson13/pfsense-api/releases/latest/download/pfSense-24.11-pkg-RESTAPI.pkg
+      pkg-static -C /dev/null add https://github.com/jaredhendrickson13/pfsense-api/releases/latest/download/pfSense-26.03-pkg-RESTAPI.pkg
 
 - To enable the API, briefly, you will need to, at System > REST API > Settings, Enable the API, set Allowed Interfaces, and set up the Authentication Method to `Key`.  On the Keys tab, create a key and save the key value to the `creds_routermonitor` config file `API_key` param.
 
@@ -180,6 +176,7 @@ Notes and considerations
 - Static mapped clients will report `static lease` in the `expiry` column.
 - `last_seen` and `expiry` are only reported for non-static mapped clients.
 - The reported device field will always be the URL to the pfSense device since there is no multi-device support.
+- After a pfSense upgrade you will need to install the new/correct version of the Unofficial V2 API.  Note that the previously issued key still seems to be in-place and active, so after installing the updated API all should be well.
 
 <br/>
 
@@ -208,13 +205,16 @@ Each access mode supports verified SSL access by configuring a certificate autho
 In short, to set up certificates for use with routermonitor:
 
   - Create a _self-signed 'CA certificate'_ (System > Certificates > Authorities), then 'Export CA' to a file.  This is the CA public key.  Set the path to this file in the routermonitor config file `CA_path` param.  Note that the directory path to the CA file defaults to `~/.config/routermonitor` - an absolute path or a path relative to ~/.config/routermonitor may be specified.
-  - Create a _internally signed 'Server Certificate'_ (System > Certificates > Certificates) that refers to the new CA certificate (thus not a _self-signed server certificate_), with a Common Name (CN) or SAN entry set to the URL being used to access the device by routermonitor.
+  - Create a _internally signed 'Server Certificate'_ (System > Certificates > Certificates) that refers to the new CA certificate (thus _not_ a _self-signed server certificate_), with a Common Name (CN) or SAN entry set to the URL being used to access the device by routermonitor.
   - Change the webGUI (webConfigurator) to use the new internally signed server certificate (System > Advanced > Admin Access > SSL/TLS Certificate).
   Once set, the new server certificate will show as in use by the 'webConfigurator'. Delete the original server cert. Your browser may need some nudging at this point.
   - If applicable, change the MIM API to use the new internally signed server certificate (System > Advanced > Netgate Nexus > TLS Certificate).  You may need to disable/re-enable
   Netgate Nexus to propagate the new certificate setup to port 8443.
 
-Use of a CA is optional.  `CA_path` defaults to False if not defined, which disables SSL verification.
+Notes
+- Use of a CA is optional.  `CA_path` defaults to False if not defined, which disables SSL verification.
+- When upgrading pfSense to a new version, these certificates seem to work correctly without needing any attention after the upgrade.
+
 
 
 <br/>
@@ -222,6 +222,7 @@ Use of a CA is optional.  `CA_path` defaults to False if not defined, which disa
 ---
 
 ## Version history
+- 4.0.1 260421 - Updated for pfSense+ 26.03 - The MIM API now returns static mapped hosts in the same way as the other modes (rather than cltt and end times)
 - 4.0 251220 - Remove dd-wrt support, Added MIM_API and Unofficial_APIV2 support.
 - 3.1 240106 - Fixed service mode exit when pfsense router is not accessible.  Added retries to lookup_MAC().
   - Adjusted for cjnfuncs V2.1 (module partitioning).
